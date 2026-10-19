@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Three stacked group cards with folder tabs, original artwork. -->
+  <rect x="8" y="10" width="48" height="14" rx="3" fill="#2f6fed"/>
+  <rect x="8" y="26" width="48" height="12" rx="3" fill="#2456b8"/>
+  <rect x="8" y="40" width="48" height="12" rx="3" fill="#1b3f8f"/>
+  <rect x="14" y="14" width="16" height="3" rx="1.5" fill="#ffffff" opacity="0.9"/>
+  <rect x="14" y="30" width="16" height="3" rx="1.5" fill="#ffffff" opacity="0.75"/>
+  <rect x="14" y="44" width="16" height="3" rx="1.5" fill="#ffffff" opacity="0.6"/>
+  <circle cx="47" cy="15.5" r="2.5" fill="#ffffff" opacity="0.9"/>
+  <circle cx="47" cy="31.5" r="2.5" fill="#ffffff" opacity="0.75"/>
+  <circle cx="47" cy="45.5" r="2.5" fill="#ffffff" opacity="0.6"/>
+</svg>

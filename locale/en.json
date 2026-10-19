@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Workspace Organizer",
+    "description": "Groups workspaces into named groups and browses group > workspace > session in the sidebar, with group-level archive and delete."
+  }
+}

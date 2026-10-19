@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-workspace-organize
+      name: 'dsh-workspace-organize'
+      config: {}
