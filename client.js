@@ -11,9 +11,10 @@
  * (`--dsw-alias-*`, `--dsw-radius-*`, `--dsh-sidebar-inline-padding`), the same
  * row metrics (34px workspace / 32px session / 14px titles / 10px timestamps /
  * 16px leading slots / 28px header controls), and the same product icon
- * artwork. `@deepseek-ai/dsh-client-ui-primitives` is bundled into the
- * ui-workspace client bundle and is NOT a boot-graph module, so its icons are
- * reproduced here from that package's own path data instead of imported.
+ * artwork. `@deepseek-ai/dsh-client-ui-primitives` is one of the shell-seeded
+ * `PLATFORM_MODULES`, so it IS requirable from this factory and its icons
+ * could be imported; the copies below predate that check and are kept only
+ * until the primitives are adopted (see the repository README).
  *
  * A shadowing entry receives only the owner props and the global standard
  * hooks (useWorkspaces / useSessions / useSessionStatus) — the official
