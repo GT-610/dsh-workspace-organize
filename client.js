@@ -200,6 +200,7 @@ window.__ModuleLoader__.load({
       unitWorkspaces: 'workspaces', unitRunning: 'running', unitPending: 'waiting',
       closeSearch: 'Close search',
       archiveSession: 'Archive session', unarchive: 'Restore from archive',
+      blankSession: 'New Session',
       archivedNotOpenable: 'Archived sessions cannot be opened',
       cancel: 'Cancel', ok: 'OK', working: 'Working…',
       dArchiveGroup: n => `All ${n} session(s) in this group will be archived. Workspaces stay.`,
@@ -232,6 +233,7 @@ window.__ModuleLoader__.load({
       unitWorkspaces: '工作区', unitRunning: '运行中', unitPending: '待处理',
       closeSearch: '关闭搜索',
       archiveSession: '归档会话', unarchive: '从归档恢复',
+      blankSession: '新会话',
       archivedNotOpenable: '已归档的会话无法打开',
       cancel: '取消', ok: '确定', working: '处理中…',
       dArchiveGroup: n => `该分组内共 ${n} 个会话将被归档。工作区保留。`,
@@ -375,19 +377,25 @@ window.__ModuleLoader__.load({
         if (normalizedQuery === '') return undefined;
         return ids => ids.filter((id) => {
           const row = list.byId[id];
-          if (row === undefined || archived.has(id)) return false;
+          // A blank placeholder never matches a query: its canonical title is
+          // the directory name, so matching it would tie search to one language.
+          if (row === undefined || row.blank === true || archived.has(id)) return false;
           return row.displayTitle.toLowerCase().includes(normalizedQuery);
         });
       }, [normalizedQuery, list.byId, archived]);
 
-      // The workspace owning the session the main view currently retains gets
-      // the active folder tint, matching the shipped browser. A docked panel
-      // takes focus away, so the tint drops while one is open.
-      const currentSessionId = useMemo(() => {
-        if (panelActive) return undefined;
-        return Object.values(list.byId)
-          .find(session => (session.retainedBy?.mainView ?? 0) > 0)?.id;
-      }, [panelActive, list.byId]);
+      // The session the main view currently retains. This is the shipped tree's
+      // own `mainSessionId`, and it doubles as the only blank session allowed a
+      // row (see `sessionShown`). A docked panel takes focus away, so the
+      // active-folder tint drops while one is open; blank visibility does not
+      // depend on that, or opening a panel would reshuffle the tree.
+      const mainSessionId = useMemo(
+        () => Object.values(list.byId)
+          .find(session => (session.retainedBy?.mainView ?? 0) > 0)?.id,
+        [list.byId],
+      );
+
+      const currentSessionId = panelActive ? undefined : mainSessionId;
 
       const activeWorkspaceId = useMemo(() => {
         if (currentSessionId === undefined) return undefined;
@@ -423,10 +431,41 @@ window.__ModuleLoader__.load({
         return unit === 'now' ? t('time.now') : t(`time.${unit}`)(n);
       };
 
-      const visibleSessions = (ws) => {
-        if (filterSessions) return filterSessions(ws.sessionIds);
-        return ws.sessionIds.filter(id => !archived.has(id));
+      /**
+       * Whether one session renders as a row at all.
+       *
+       * Ordinary sessions do. A blank one is a provisional New Session that
+       * nothing has been sent to yet, and the shipped derivation
+       * (`sessionVisible`) keeps exactly one of them: the one the main view
+       * holds. Every other blank stays out of the list — those are the spent
+       * drafts left behind by earlier "new session" clicks, and showing them is
+       * what put a row named after each workspace in the tree.
+       * @param id - the session to test.
+       * @returns whether the row belongs in the tree.
+       */
+      const sessionShown = (id) => {
+        const row = list.byId[id];
+        if (row === undefined || archived.has(id)) return false;
+        return row.blank !== true || id === mainSessionId;
       };
+
+      const visibleSessions = (ws) => {
+        const ids = ws.sessionIds.filter(sessionShown);
+        if (filterSessions !== undefined) return filterSessions(ids);
+        // The surviving placeholder leads its Workspace, matching the order
+        // `sectionMembers` gives placeholders in the shipped tree.
+        if (mainSessionId === undefined || !ids.includes(mainSessionId)) return ids;
+        return [mainSessionId, ...ids.filter(id => id !== mainSessionId)];
+      };
+
+      /**
+       * Visible rows that actually hold something. The blank placeholder is
+       * excluded, so counts and bulk operations agree on what a "session in
+       * this group" is.
+       * @param ws - the workspace to read.
+       * @returns its real, visible session ids.
+       */
+      const contentSessions = ws => visibleSessions(ws).filter(id => list.byId[id]?.blank !== true);
 
       const statusOf = (sessionId) => {
         const status = statuses.get(sessionId);
@@ -503,6 +542,11 @@ window.__ModuleLoader__.load({
       const sessionRow = (sessionId, depth) => {
         const row = list.byId[sessionId];
         if (row === undefined) return null;
+        // The one visible blank is a placeholder, not a conversation: it shows
+        // the localized New Session label instead of its directory-derived
+        // title, and it carries no verbs — renaming, forking, or archiving it
+        // would all act on content that does not exist yet.
+        const isBlank = row.blank === true;
         const isArchived = archived.has(sessionId);
         const status = statusOf(sessionId);
         const key = `s:${sessionId}`;
@@ -521,14 +565,16 @@ window.__ModuleLoader__.load({
           'aria-level': 3, 'aria-selected': currentSessionId === sessionId,
           style: indent(depth), 'data-session-id': sessionId,
           onClick: () => { if (!isArchived) services.open(sessionId); },
-          onDoubleClick: () => setDialog({ kind: 'renameSession', sessionId, current: row.displayTitle }),
-          ...rowMenuProps(key, items),
+          onDoubleClick: isBlank ? undefined : () => setDialog({ kind: 'renameSession', sessionId, current: row.displayTitle }),
+          // A placeholder has no menu to offer, but its right-click is still
+          // claimed so the platform menu never appears over the tree.
+          ...(isBlank ? { onContextMenu: e => e.preventDefault() } : rowMenuProps(key, items)),
         },
         h('span', { className: 'two-slot' },
-          !isArchived && status.state !== 'idle' ? h(StateDot, { state: status.state }) : null),
-        h('span', { className: 'two-row-title' }, row.displayTitle),
-        h('span', { className: 'two-time' }, status.trailing ?? timeLabel(row.updatedAt)),
-        h('span', { className: 'two-actions' },
+          !isArchived && !isBlank && status.state !== 'idle' ? h(StateDot, { state: status.state }) : null),
+        h('span', { className: 'two-row-title' }, isBlank ? t('blankSession') : row.displayTitle),
+        !isBlank && h('span', { className: 'two-time' }, status.trailing ?? timeLabel(row.updatedAt)),
+        !isBlank && h('span', { className: 'two-actions' },
           h('button', {
             type: 'button', className: 'two-act-btn',
             title: isArchived ? t('unarchive') : t('archiveSession'),
@@ -606,7 +652,7 @@ window.__ModuleLoader__.load({
         const members = group.workspaceIds
           .map(id => workspaces.find(w => w.workspaceId === id))
           .filter(Boolean);
-        const sessionCount = members.reduce((acc, m) => acc + visibleSessions(m).length, 0);
+        const sessionCount = members.reduce((acc, m) => acc + contentSessions(m).length, 0);
         // Status roll-up: how many workspaces, and how much of the group is
         // actually moving (or blocked on the user right now).
         let running = 0;
@@ -669,7 +715,9 @@ window.__ModuleLoader__.load({
             const ws = workspaces.find(w => w.workspaceId === wsId);
             if (ws === undefined) continue;
             for (const sessionId of ws.sessionIds) {
-              if (archived.has(sessionId)) continue;
+              // Archived rows are already archived, and a blank placeholder has
+              // no content to archive: exactly the members the count promised.
+              if (archived.has(sessionId) || list.byId[sessionId]?.blank === true) continue;
               await services.archiveSession(sessionId)
                 .catch(() => services.archiveSession(sessionId, { stopActivity: true }))
                 .catch(e2 => console.warn('workspace-organize: archive refused', sessionId, e2));
