@@ -197,6 +197,7 @@ window.__ModuleLoader__.load({
       archiveGroup: 'Archive all sessions in group…', groupMenu: 'Group menu',
       deleteGroupWorkspaces: 'Delete all workspaces in group…',
       viewOptions: 'View options', expandAll: 'Expand all', collapseAll: 'Collapse all',
+      unitWorkspaces: 'workspaces', unitRunning: 'running', unitPending: 'waiting',
       closeSearch: 'Close search',
       archiveSession: 'Archive session', unarchive: 'Restore from archive',
       archivedNotOpenable: 'Archived sessions cannot be opened',
@@ -228,6 +229,7 @@ window.__ModuleLoader__.load({
       archiveGroup: '归档组内全部会话…', groupMenu: '分组菜单',
       deleteGroupWorkspaces: '删除组内全部工作区…',
       viewOptions: '视图选项', expandAll: '展开全部', collapseAll: '折叠全部',
+      unitWorkspaces: '工作区', unitRunning: '运行中', unitPending: '待处理',
       closeSearch: '关闭搜索',
       archiveSession: '归档会话', unarchive: '从归档恢复',
       archivedNotOpenable: '已归档的会话无法打开',
@@ -307,7 +309,17 @@ window.__ModuleLoader__.load({
       const [groups, setGroups] = useState(undefined); // undefined = loading
       const [query, setQuery] = useState('');
       const [searchOpen, setSearchOpen] = useState(false);
-      const [collapsed, setCollapsed] = useState(() => new Set());
+      // Explicit disclosure choices per node key (`g:<id>` / `ws:<id>`). An
+      // absent key means "follow the default" — the shipped browser resolves
+      // expansion the same way (`groupExpansion[key] ?? …`) instead of seeding
+      // every node open, which is what buried the tree in session rows.
+      const [expansion, setExpansion] = useState(() => {
+        try {
+          const raw = localStorage.getItem('workspaceOrganize.expansion');
+          const parsed = raw === null ? undefined : JSON.parse(raw);
+          return parsed !== null && typeof parsed === 'object' ? parsed : {};
+        } catch { return {}; }
+      });
       const [menu, setMenu] = useState(undefined);       // {items, x, y, key}
       const [dialog, setDialog] = useState(undefined);   // {kind, ...payload}
       const [busy, setBusy] = useState(false);
@@ -371,20 +383,40 @@ window.__ModuleLoader__.load({
       // The workspace owning the session the main view currently retains gets
       // the active folder tint, matching the shipped browser. A docked panel
       // takes focus away, so the tint drops while one is open.
-      const activeWorkspaceId = useMemo(() => {
+      const currentSessionId = useMemo(() => {
         if (panelActive) return undefined;
-        const current = Object.values(list.byId)
-          .find(session => (session.retainedBy?.mainView ?? 0) > 0);
-        if (current === undefined) return undefined;
-        const owner = workspaces.find(w => w.sessionIds.includes(current.id));
-        return owner?.workspaceId;
-      }, [panelActive, list.byId, workspaces]);
+        return Object.values(list.byId)
+          .find(session => (session.retainedBy?.mainView ?? 0) > 0)?.id;
+      }, [panelActive, list.byId]);
 
-      const toggle = (key) => setCollapsed((cur) => {
-        const next = new Set(cur);
-        if (next.has(key)) next.delete(key); else next.add(key);
-        return next;
-      });
+      const activeWorkspaceId = useMemo(() => {
+        if (currentSessionId === undefined) return undefined;
+        return workspaces.find(w => w.sessionIds.includes(currentSessionId))?.workspaceId;
+      }, [currentSessionId, workspaces]);
+
+      /** Record one node's disclosure choice so it survives a reload. */
+      const persistExpansion = useCallback((next) => {
+        setExpansion(next);
+        try { localStorage.setItem('workspaceOrganize.expansion', JSON.stringify(next)); } catch { /* private mode */ }
+      }, []);
+
+      const setExpanded = (key, value) => {
+        persistExpansion({ ...expansion, [key]: value });
+      };
+
+      /**
+       * Whether a node renders its children. A search forces everything open so
+       * matches are reachable; otherwise an explicit choice wins and the
+       * fallback covers the untouched default.
+       * @param key - the node identity.
+       * @param fallback - the default when the user never chose.
+       * @returns whether the node is expanded.
+       */
+      const isExpanded = (key, fallback) => {
+        if (filterSessions !== undefined) return true;
+        const explicit = expansion[key];
+        return explicit === undefined ? fallback : explicit === true;
+      };
 
       const timeLabel = (updatedAt) => {
         const { unit, n } = relativeTime(updatedAt, now);
@@ -446,23 +478,26 @@ window.__ModuleLoader__.load({
       };
 
       /**
-       * Right-click handling for one row. The desktop shell swallows
-       * `contextmenu` at the document during the capture phase — the event
-       * never reaches React's root listener — so the gesture is caught on
-       * mousedown instead. The contextmenu handler stays mounted purely to
-       * keep a native menu from appearing wherever it is not swallowed.
+       * Right-click handling for one row.
+       *
+       * The gesture is claimed on `contextmenu`, never on mousedown, so that it
+       * composes with whatever else is installed instead of racing it. A
+       * context-menu plugin that has already claimed this row stops the event
+       * during the document capture phase; our handler then never runs and that
+       * plugin's menu is the only one on screen. When nothing claims the row —
+       * a plain web session, or a node no other plugin understands, such as our
+       * group rows — the event reaches us, we suppress the platform menu and
+       * show ours. Opening on mousedown would step around that arbitration and
+       * stack two menus on every right-click.
        * @param key - the row identity the menu belongs to.
        * @param items - the menu rows.
        * @returns the handlers spread onto the row element.
        */
       const rowMenuProps = (key, items) => ({
-        onMouseDown: (e) => {
-          if (e.button !== 2) return;
+        onContextMenu: (e) => {
           e.preventDefault();
-          e.stopPropagation();
           openMenu(key, items, e);
         },
-        onContextMenu: (e) => e.preventDefault(),
       });
 
       const sessionRow = (sessionId, depth) => {
@@ -479,7 +514,12 @@ window.__ModuleLoader__.load({
         ];
         return h('div', {
           key, className: `two-row two-session-row${isArchived ? ' archived' : ''}${menu?.key === key ? ' menu-open' : ''}`,
-          role: 'treeitem', style: indent(depth), 'data-session-id': sessionId,
+          // The shipped rows' DOM contract, so third-party integrations (row
+          // menus, hit testing, automation) resolve this row the same way they
+          // resolve the browser it replaces.
+          role: 'treeitem', 'data-row-key': `session:${sessionId}`,
+          'aria-level': 3, 'aria-selected': currentSessionId === sessionId,
+          style: indent(depth), 'data-session-id': sessionId,
           onClick: () => { if (!isArchived) services.open(sessionId); },
           onDoubleClick: () => setDialog({ kind: 'renameSession', sessionId, current: row.displayTitle }),
           ...rowMenuProps(key, items),
@@ -505,7 +545,10 @@ window.__ModuleLoader__.load({
       const workspaceRow = (ws, depth) => {
         const ids = visibleSessions(ws);
         const key = `ws:${ws.workspaceId}`;
-        const isCollapsed = collapsed.has(key) && !filterSessions;
+        // Workspaces start collapsed — only the one holding the current session
+        // opens, which is the shipped browser's own resting shape.
+        const isOpen = isExpanded(key, ws.workspaceId === activeWorkspaceId);
+        const isCollapsed = !isOpen;
         const items = [
           { label: t('renameWorkspace'), icon: Ico.edit(14), action: () => setDialog({ kind: 'renameWs', workspaceId: ws.workspaceId, current: ws.title }) },
           { label: t('newSession'), icon: Ico.projectAdd(14), action: () => services.startSession(ws.workspaceId) },
@@ -526,8 +569,9 @@ window.__ModuleLoader__.load({
         return h('div', { key: ws.workspaceId, className: 'two-ws-node' },
           h('div', {
             className: `two-row two-ws-row${menu?.key === key ? ' menu-open' : ''}`,
-            role: 'treeitem', 'aria-expanded': !isCollapsed, style: indent(depth),
-            onClick: () => toggle(key),
+            role: 'treeitem', 'data-row-key': `workspace:${ws.workspaceId}`,
+            'aria-level': 2, 'aria-expanded': !isCollapsed, style: indent(depth),
+            onClick: () => setExpanded(key, !isOpen),
             ...rowMenuProps(key, items),
           },
           h('span', { className: `two-slot two-folder${activeWorkspaceId === ws.workspaceId ? ' active' : ''}` },
@@ -555,11 +599,30 @@ window.__ModuleLoader__.load({
 
       const groupNode = (group, depth) => {
         const key = `g:${group.id}`;
-        const isCollapsed = collapsed.has(key) && !filterSessions;
+        // Groups hold no sessions of their own, so they rest open: the noise a
+        // wall of identical session rows caused came from workspaces, not here.
+        const isOpen = isExpanded(key, true);
+        const isCollapsed = !isOpen;
         const members = group.workspaceIds
           .map(id => workspaces.find(w => w.workspaceId === id))
           .filter(Boolean);
         const sessionCount = members.reduce((acc, m) => acc + visibleSessions(m).length, 0);
+        // Status roll-up: how many workspaces, and how much of the group is
+        // actually moving (or blocked on the user right now).
+        let running = 0;
+        let pending = 0;
+        for (const member of members) {
+          for (const sessionId of member.sessionIds) {
+            if (archived.has(sessionId)) continue;
+            const status = statuses.get(sessionId);
+            if (status === undefined) continue;
+            if (status.pendingInteraction !== undefined) pending += 1;
+            else if (status.running === true) running += 1;
+          }
+        }
+        const state = pending > 0 ? 'warning' : running > 0 ? 'ongoing' : undefined;
+        const summary = [`${members.length} ${t('unitWorkspaces')}`];
+        if (running > 0) summary.push(`${running} ${t('unitRunning')}`);
         const items = [
           { label: t('renameGroup'), icon: Ico.edit(14), action: () => setDialog({ kind: 'renameGroup', groupId: group.id, current: group.name }) },
           { label: t('archiveGroup'), icon: Ico.archive(14), action: () => setDialog({ kind: 'confirmArchiveGroup', groupId: group.id, name: group.name, count: sessionCount }) },
@@ -570,15 +633,21 @@ window.__ModuleLoader__.load({
         return h('div', { key: group.id, className: 'two-group-node' },
           h('div', {
             className: `two-row two-group-row${menu?.key === key ? ' menu-open' : ''}`,
-            role: 'treeitem', 'aria-expanded': !isCollapsed, style: indent(depth),
-            onClick: () => toggle(key),
+            role: 'treeitem', 'data-row-key': `group:${group.id}`,
+            'aria-level': 1, 'aria-expanded': !isCollapsed, style: indent(depth),
+            onClick: () => setExpanded(key, !isOpen),
             ...rowMenuProps(key, items),
           },
           h('span', { className: 'two-slot two-chev' },
             h('span', { className: `two-arrow${isCollapsed ? '' : ' open'}` }, Ico.triangle(14))),
           h('span', { className: 'two-text' },
             h('span', { className: 'two-row-title two-group-title' }, group.name)),
-          h('span', { className: 'two-count' }, String(sessionCount)),
+          h('span', {
+            className: 'two-count',
+            title: `${members.length} ${t('unitWorkspaces')}${running > 0 ? ` · ${running} ${t('unitRunning')}` : ''}${pending > 0 ? ` · ${pending} ${t('unitPending')}` : ''}`,
+          },
+          state !== undefined ? h(StateDot, { state, size: 10 }) : null,
+          h('span', null, summary.join(' · '))),
           h('span', { className: 'two-actions' },
             h('button', {
               type: 'button', className: 'two-act-btn', title: t('groupMenu'),
@@ -634,11 +703,15 @@ window.__ModuleLoader__.load({
         }).catch(err => console.warn('workspace-organize: add workspace failed', err));
       };
 
-      const expandAll = () => setCollapsed(new Set());
-      const collapseAll = () => setCollapsed(new Set([
-        ...(groups ?? []).map(g => `g:${g.id}`),
-        ...workspaces.map(w => `ws:${w.workspaceId}`),
-      ]));
+      /** Pin every node open or shut, overwriting earlier per-node choices. */
+      const setAllExpanded = (value) => {
+        const next = {};
+        for (const group of groups ?? []) next[`g:${group.id}`] = value;
+        for (const workspace of workspaces) next[`ws:${workspace.workspaceId}`] = value;
+        persistExpansion(next);
+      };
+      const expandAll = () => setAllExpanded(true);
+      const collapseAll = () => setAllExpanded(false);
 
       const viewItems = [
         { label: t('newGroup'), icon: Ico.projectAdd(14), action: () => setDialog({ kind: 'createGroup' }) },
@@ -880,6 +953,7 @@ window.__ModuleLoader__.load({
 .two-group-title { font-weight:600; }
 .two-session-row .two-row-title { flex:1; margin:0 6px 0 4px; }
 .two-count, .two-time { flex:none; font-size:10px; line-height:16px; color:var(--dsw-alias-label-tertiary); }
+.two-count { display:inline-flex; align-items:center; gap:4px; }
 .two-session-row.archived .two-row-title { color:var(--dsw-alias-label-caption); }
 .two-empty { padding:16px 12px; font-size:13px; line-height:20px; color:var(--dsw-alias-label-tertiary); }
 .two-ws-sessions { display:flex; flex-direction:column; }
