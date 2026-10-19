@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Archived rows are reachable again. The view menu carries the shipped three-way
+  choice — hide archived sessions, show all sessions including archived ones, or
+  archived only — and the choice survives a reload. While archived rows are on
+  screen they offer "Restore from archive" instead of "Archive session", and they
+  do not open, because an archived session cannot be viewed.
+
+### Fixed
+
+- Archiving a session no longer makes it unreachable. The shadowing browser has
+  no shipped browser behind it, so a hidden archived row had no way back; the
+  archived branch of the session row (restore verb, archived styling,
+  `aria-description`) was therefore dead code that only now runs.
+- A group-level archive now acts on exactly the sessions its confirmation
+  counted. The count and the operation share one derivation of "a session in
+  this group", so a typed search can no longer make the dialog promise three
+  rows while the operation archives every session in the group.
+- Archived sessions stay out of the group roll-up that labels the group row.
+
 ## [0.1.0] - 2026-10-19
 
 First public release.
