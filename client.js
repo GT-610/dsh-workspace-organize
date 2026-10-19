@@ -65,10 +65,12 @@ window.__ModuleLoader__.load({
       removeFromGroup: 'Move out of group', moveToGroup: 'Move to group',
       renameGroup: 'Rename group', ungroup: 'Ungroup (keep workspaces)',
       archiveGroup: 'Archive all sessions in group…', groupMenu: 'Group menu',
+      deleteGroupWorkspaces: 'Delete all workspaces in group…',
       archiveSession: 'Archive session', unarchive: 'Restore from archive',
       archivedNotOpenable: 'Archived sessions cannot be opened',
       cancel: 'Cancel', ok: 'OK', working: 'Working…',
       dArchiveGroup: n => `All ${n} session(s) in this group will be archived. Workspaces stay.`,
+      dDeleteGroupWorkspaces: n => `All ${n} workspace(s) in this group will be removed from DSH. Session logs stay on disk. This cannot be undone.`,
       dUngroup: 'Workspaces return to Ungrouped. Nothing is deleted.',
       dDeleteWs: 'The registration is removed from DSH. Session logs stay on disk.',
       nameGroup: 'Group name', nameWorkspace: 'Workspace name',
@@ -82,10 +84,12 @@ window.__ModuleLoader__.load({
       removeFromGroup: '移出分组', moveToGroup: '移入分组',
       renameGroup: '重命名分组', ungroup: '解散分组(保留工作区)',
       archiveGroup: '归档组内全部会话…', groupMenu: '分组菜单',
+      deleteGroupWorkspaces: '删除组内全部工作区…',
       archiveSession: '归档会话', unarchive: '从归档恢复',
       archivedNotOpenable: '已归档的会话无法打开',
       cancel: '取消', ok: '确定', working: '处理中…',
       dArchiveGroup: n => `该分组内共 ${n} 个会话将被归档。工作区保留。`,
+      dDeleteGroupWorkspaces: n => `该分组内共 ${n} 个工作区将从 DSH 移除;会话日志仍保留在磁盘上。此操作不可撤销。`,
       dUngroup: '工作区将回到"未分组",不会删除任何内容。',
       dDeleteWs: '将从 DSH 移除该工作区登记;会话日志仍保留在磁盘上。',
       nameGroup: '分组名称', nameWorkspace: '工作区名称',
@@ -329,6 +333,17 @@ window.__ModuleLoader__.load({
             items: [
               { label: t('renameGroup'), action: () => setDialog({ kind: 'renameGroup', groupId: group.id, current: group.name }) },
               {
+                label: t('deleteGroupWorkspaces'),
+                danger: true,
+                action: () => {
+                  setDialog({
+                    kind: 'confirmDeleteGroupWorkspaces',
+                    groupId: group.id, name: group.name, count: members.length,
+                  });
+                  setMenuFor(undefined);
+                },
+              },
+              {
                 label: t('ungroup'),
                 danger: true,
                 action: () => { persist((groups ?? []).filter(g => g.id !== group.id)); setMenuFor(undefined); },
@@ -431,10 +446,7 @@ window.__ModuleLoader__.load({
                 break;
               }
               case 'confirmArchiveGroup': void confirmArchiveGroup(dialog.groupId); break;
-              case 'confirmDeleteGroup':
-                persist((groups ?? []).filter(g => g.id !== dialog.groupId));
-                setDialog(undefined);
-                break;
+              case 'confirmDeleteGroupWorkspaces': void confirmDeleteGroupWorkspaces(dialog.groupId); break;
               case 'confirmDeleteWs':
                 services.deleteWorkspace(dialog.workspaceId)
                   .catch(err => console.warn('workspace-organize: delete failed', err))
@@ -473,7 +485,7 @@ window.__ModuleLoader__.load({
         renameGroup: [t('renameGroup'), t('nameGroup')],
         renameWs: [t('renameWorkspace'), t('nameWorkspace')],
         confirmArchiveGroup: [`${t('archiveGroup').replace('…', '')} — ${dialog.name}`, t('dArchiveGroup')(dialog.count)],
-        confirmDeleteGroup: [`${t('ungroup')} — ${dialog.name}`, t('dUngroup')],
+        confirmDeleteGroupWorkspaces: [`${t('deleteGroupWorkspaces').replace('…', '')} — ${dialog.name}`, t('dDeleteGroupWorkspaces')(dialog.count)],
         confirmDeleteWs: [`${t('deleteWorkspace').replace('…', '')} — ${dialog.title}`, t('dDeleteWs')],
       };
       const [title, body] = labels[dialog.kind] ?? ['', ''];
