@@ -22,14 +22,6 @@ window.__ModuleLoader__.load({
     const { useState, useEffect, useMemo, useRef, useCallback } = React;
     const h = React.createElement;
 
-    /** Subscribe a HostObservable source into a selector hook. */
-    function useObservable(source, selector) {
-      return React.useSyncExternalStore(
-        source.subscribe,
-        () => selector(source.getSnapshot()),
-      );
-    }
-
     /** POST the group document to the Host; localStorage mirrors it always. */
     async function saveGroups(doc) {
       try { localStorage.setItem('workspaceOrganize.groups', JSON.stringify(doc)); } catch { /* private mode */ }
@@ -114,9 +106,11 @@ window.__ModuleLoader__.load({
         services,
       } = props;
 
-      const wsSnapshot = useObservable(useWorkspaces, s => s);
-      const list = useObservable(useSessions, s => s);
-      const statuses = useObservable(useSessionStatus, s => s);
+      // The standard kit hands out selector HOOKS (bound observable sources),
+      // not raw sources: call them directly, exactly like the shipped browser.
+      const wsSnapshot = useWorkspaces(s => s);
+      const list = useSessions(s => s);
+      const statuses = useSessionStatus(s => s);
       const workspaces = wsSnapshot.items;
       const workspaceReady = wsSnapshot.phase === 'ready' && wsSnapshot.state !== 'loading';
       const archived = useMemo(() => new Set(wsSnapshot.archivedSessionIds), [wsSnapshot.archivedSessionIds]);
