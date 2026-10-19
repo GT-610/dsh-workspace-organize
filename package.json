@@ -11,12 +11,13 @@
     "sidebar",
     "group"
   ],
-  "homepage": "https://github.com/OWNER/dsh-workspace-organize#readme",
+  "homepage": "https://github.com/GT-610/dsh-workspace-organize#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/dsh-workspace-organize.git"
+    "url": "git+https://github.com/GT-610/dsh-workspace-organize.git"
   },
-  "bugs": "https://github.com/OWNER/dsh-workspace-organize/issues",
+  "bugs": "https://github.com/GT-610/dsh-workspace-organize/issues",
+  "author": "GT610 (https://github.com/GT-610)",
   "license": "MIT",
   "type": "module",
   "publishConfig": {

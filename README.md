@@ -1,0 +1,140 @@
+# 工作区分组整理
+
+把 DSH 侧栏的工作区归入自定义分组，按 分组 → 工作区 → 会话 三级浏览。分组只是插件自己的一层虚拟归类：工作区登记、会话、归档与置顶集合都不会被它改写。
+
+[English](README.en-US.md)
+
+## 特性
+
+- **三级浏览。** 分组 → 工作区 → 会话。行高、字号、图标与折叠行为沿用官方侧栏，用的是同一套 `--dsw-*` 设计令牌和同一批官方组件（`Menu`、`Modal`、`Tooltip`、`Icon*`、`StateDot`），所以主题切换、右键菜单的模糊与透明都跟随外壳，不需要插件自己维护。
+- **分组是独立的虚拟层。** 分组文档由插件自己的 Host 路由存放在 `$DSH_HOME/storages/`，与官方工作区注册表互不干涉；除非你点了重命名/归档/删除，插件不会改动任何工作区或会话。
+- **空白会话按官方规则显示。** 每次「新建会话」都会留下一个占位会话（`blank`），官方侧栏只显示主视图当前持有的那一个并显示为「新会话」。插件遵循同一条规则：历史遗留的草稿不再堆成一行行与工作区同名的会话。
+- **组级批量操作。** 组菜单可一次归档组内全部会话，或删除组内全部工作区（都有确认弹窗，并显示影响数量）。
+- **右键不与其它插件抢。** 菜单在 `contextmenu` 阶段声明：如果某个右键菜单插件已经接管了这一行，事件在捕获阶段就被它拦下，插件不会弹出第二个菜单，也不会用 mousedown 绕开仲裁。
+- **折叠状态会记住。** 显式展开/折叠的选择存进 localStorage，刷新后仍是同一棵树。
+
+## 工作原理
+
+```text
+┌─ DSH Web 外壳 ────────────────────────────────────────────────┐
+│                                                              │
+│  sidebar.workspaces 槽位（单槽位，按 priority 取最低的条目）    │
+│    ├─ 官方 WorkspaceBrowser   priority 0   （仍然注册）        │
+│    └─ 本插件 GroupedBrowser   priority -100（胜出渲染）        │
+│                                                              │
+│  GroupedBrowser                                              │
+│    ├─ 读官方快照：useWorkspaces / useSessions / useSessionStatus
+│    ├─ 写官方操作：ctx.get('uiWorkspace' | 'workspaces' | 'sessions')
+│    └─ 分组文档 ←→ /api/workspace-organize（Host 路由）          │
+└──────────────────────────────────────────────────────────────┘
+
+Host 半边（src/index.ts）
+  GET  /api/workspace-organize   → 读取分组文档（loopback 可信）
+  POST /api/workspace-organize   → 同源写入，原子落盘
+        └─ $DSH_HOME/storages/workspace-organize-groups.json
+```
+
+官方条目依然注册在同一个槽位上（`priority` 0），所以它声明的子槽位继续存在；本插件以更低的 `priority` 赢得这个单元格的渲染。这也是为什么组件只能拿到 owner 属性与框架标准钩子：官方条目自己的注入面不会转发给一个遮蔽条目，所有业务操作都通过 `ctx.get` 惰性解析官方服务。
+
+## 安装
+
+### 从 npm / GitHub
+
+```sh
+dsh plugin --profile <profile> add dsh-workspace-organize
+# 或直接从仓库安装：
+dsh plugin --profile <profile> add github:GT-610/dsh-workspace-organize
+```
+
+装好后重启 DSH 让 Host 重新扫描插件表。
+
+### 本地开发
+
+```sh
+git clone https://github.com/GT-610/dsh-workspace-organize
+cd dsh-workspace-organize
+pnpm install          # 会通过 prepare 脚本自动构建 dist/
+```
+
+再把仓库软链进 profile 的 `node_modules`，重启 DSH：
+
+```powershell
+# Windows
+New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.dsh\profiles\<profile>\node_modules\dsh-workspace-organize" -Target (Get-Location)
+```
+
+```sh
+# macOS / Linux
+ln -s "$PWD" ~/.dsh/profiles/<profile>/node_modules/dsh-workspace-organize
+```
+
+之后 `pnpm dev`（`tsdown --watch`）改完源码刷新页面即可。
+
+## 使用
+
+| 想要的效果 | 操作 |
+| --- | --- |
+| 新建分组 | 标题栏的滑杆按钮 → 新建分组 |
+| 重命名 / 解散分组 | 分组行右键或 ⋯ |
+| 归档组内全部会话 | 分组行 ⋯ → 归档组内全部会话… |
+| 删除组内全部工作区 | 分组行 ⋯ → 删除组内全部工作区… |
+| 把工作区移入分组 | 工作区行 ⋯ → 移入分组 → 选分组 |
+| 移出分组 | 工作区行 ⋯ → 移出分组 |
+| 在此工作区新建会话 | 工作区行 ⋯ 或行尾的 ＋ |
+| 展开 / 折叠全部 | 标题栏滑杆按钮 → 展开全部 / 折叠全部 |
+| 搜索会话 | 标题栏放大镜 |
+
+## 数据与隐私
+
+- 分组文档只存在两个地方：Host 上的 `$DSH_HOME/storages/workspace-organize-groups.json`，以及浏览器 localStorage 里的镜像（断网时先落镜像，恢复后仍以 Host 为准）。
+- 写入是原子的：临时文件 + `rename`，并且走一条串行写链，避免并发请求互相覆盖。
+- 读接口开放（服务本身只监听回环地址），写接口只接受同源浏览器请求：优先看 `Sec-Fetch-Site`，否则回退比对 `Origin` 与 `Host`，两者都没有的请求一律拒绝。
+- 文档有上限并在两侧用同一个校验器校验：最多 200 个分组、每组最多 500 个工作区、请求体 1 MiB；非法文档整份拒绝，不做部分应用。未知字段会被丢弃，因此更高版本写的文档仍能读取。
+
+## 开发
+
+```text
+src/
+├─ index.ts                Host 半边：路由、同源校验、原子存储
+├─ shared/contract.ts      两侧共用的分组文档类型与校验器
+└─ client/
+   ├─ index.tsx            apply()、官方服务组装、崩溃边界、槽位注册
+   ├─ contract.ts          Client 侧契约（Services / 注入面）
+   ├─ Browser.tsx          三级树、行、菜单、弹窗
+   ├─ select.ts            纯派生：可见行规则、状态汇总、时间分档
+   ├─ groups.ts            分组文档传输与 localStorage 镜像
+   ├─ i18n.ts              中英文案
+   └─ styles.ts            行布局样式表（只用 --dsw-* 令牌）
+tests/
+├─ select.spec.ts          纯派生（空白会话规则、汇总、时间分档）
+├─ contract.spec.ts        文档校验器与同源写入闸门
+├─ browser.spec.tsx        jsdom 里挂载组件，验证行与菜单接线
+└─ stubs/primitives.tsx    官方组件的替身（原因见下）
+```
+
+```sh
+pnpm typecheck   # tsc --noEmit，对着官方发布的类型检查
+pnpm lint        # oxlint
+pnpm test        # vitest（jsdom）
+pnpm build       # tsdown → dist/
+pnpm check       # 以上四件事
+pnpm dev         # tsdown --watch
+```
+
+几点约定，改动前值得先读：
+
+- **类型来自官方发布的包。** `@deepseek-ai/dsh-client-ui-workspace`、`-ui-slots`、`-ui-session`、`-ui-sidebar`、`-ui-layout`、`-ui-renderer` 以及 `@deepseek-ai/dsh-api-*` 都作为 devDependency 安装，只用于类型与测试；槽位契约（`PropsRuntime<'sidebar.workspaces'>`）一旦漂移，`pnpm typecheck` 会先失败，而不是等侧栏崩掉。
+- **`dist/` 是提交进仓库的。** DSH 安装插件时默认不执行包里的构建脚本（需要显式批准），所以交付物必须随仓库一起提供。`prepare` 脚本仍然保留，方便本地克隆后自动构建。
+- **客户端产物必须是闭包工厂。** 外壳以脚本方式加载 `exports["./client"]`，期望它调用 `window.__ModuleLoader__.load({ id, factory })`；`tsdown.config.ts` 用 banner/footer 把 CJS 分块包进这个工厂，并用短横线外的基线模块（`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives` 等）保持外部依赖。
+- **组件测试用的是官方组件的替身。** 官方 primitives 发布的 ESM 入口并未声明它实际用到的运行时依赖（`clsx`、`mdast-*`、`micromark-*`、shiki 语法目录），只有外壳里被预置的那份 bundle 能加载它。因此 jsdom 测试通过 `tests/stubs/primitives.tsx` 替换它，验证的是插件自己的接线；外观本身由外壳负责。
+- **样式表是全局的。** 插件 CSS 由页面直接注入，不是 shadow root，所以每个类名都带 `dwo-` 前缀。
+
+## 兼容性
+
+- 需要 DSH `>= 0.2.1-rc.2`（`package.json` 的 `engines.dsh`，安装时会被检查）。
+- 仅 web 半边：desktop 外壳同样用 web 渲染，因此 tauri 与浏览器安装行为一致。
+- 与右键菜单类插件共存：本插件不抢已被接管的行，也不会因为别的插件存在而失效。
+
+## 许可
+
+[MIT](LICENSE)
