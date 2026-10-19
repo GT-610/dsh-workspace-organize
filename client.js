@@ -94,6 +94,33 @@ window.__ModuleLoader__.load({
     const t = (key, fallback) => DICT[key] ?? fallback ?? key;
 
     /**
+     * Loud-failure guard. A render crash in this entry makes the slot abdicate
+     * and fall back to the shipped browser — and abdication unmounts the
+     * crashing boundary together with its `data-slot-error` anchor, so the
+     * failure leaves no trace in the DOM. Log the real error first, then
+     * re-throw so the slot's own boundary still performs that fallback.
+     */
+    class CrashReporter extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { error: undefined };
+      }
+
+      static getDerivedStateFromError(error) {
+        return { error };
+      }
+
+      componentDidCatch(error, info) {
+        console.error('workspace-organize: grouped browser crashed', error, info);
+      }
+
+      render() {
+        if (this.state.error !== undefined) throw this.state.error;
+        return this.props.children;
+      }
+    }
+
+    /**
      * The grouped browser. Props come from the slot runtime: shell owner share
      * (wide / expandSidebar) and the global standard hooks.
      */
@@ -553,7 +580,7 @@ window.__ModuleLoader__.load({
             priority: -100,
           },
           function GroupedBrowserBound(runtimeProps) {
-            return h(GroupedBrowser, { ...runtimeProps, services });
+            return h(CrashReporter, null, h(GroupedBrowser, { ...runtimeProps, services }));
           },
         ));
       },
