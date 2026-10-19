@@ -62,7 +62,6 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "tsc --noEmit && oxlint && vitest run && tsdown",
-    "prepare": "tsdown",
     "prepublishOnly": "npm run check"
   },
   "peerDependencies": {

@@ -35,8 +35,9 @@ First public release.
   `StateDot`) instead of hand-copied artwork and hand-rolled menu and dialog
   surfaces.
 - Class names are prefixed `dwo-` because the injected stylesheet is global.
-- `dist/` is committed: DSH does not run a package's build scripts on install
-  unless they are approved.
+- `dist/` is committed: DSH blocks a package's build scripts by default, so a
+  git install that declares `prepare` is rejected outright. The artifacts travel
+  with the repository and CI fails if a rebuild differs from them.
 
 [Unreleased]: https://github.com/GT-610/dsh-workspace-organize/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/GT-610/dsh-workspace-organize/releases/tag/v0.1.0

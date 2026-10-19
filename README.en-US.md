@@ -46,14 +46,15 @@ dsh plugin --profile <profile> add dsh-workspace-organize
 dsh plugin --profile <profile> add github:GT-610/dsh-workspace-organize
 ```
 
-Restart DSH afterwards so the Host re-scans its plugin table.
+Restart DSH afterwards so the Host re-scans its plugin table. `dist/` is committed, so a git install needs no build-script allowlist (DSH blocks a package's build scripts by default, and rejects a git install that declares `prepare`).
 
 ### Local development
 
 ```sh
 git clone https://github.com/GT-610/dsh-workspace-organize
 cd dsh-workspace-organize
-pnpm install          # builds dist/ through the prepare script
+pnpm install          # dev dependencies; dist/ is committed, so a link works as-is
+pnpm build            # rebuild dist/ after changing sources
 ```
 
 Then link the checkout into the profile's `node_modules` and restart DSH:
@@ -124,7 +125,7 @@ pnpm dev         # tsdown --watch
 Conventions worth reading before a change:
 
 - **Types come from the packages DSH publishes.** `@deepseek-ai/dsh-client-ui-workspace`, `-ui-slots`, `-ui-session`, `-ui-sidebar`, `-ui-layout`, `-ui-renderer` and the `@deepseek-ai/dsh-api-*` packages are installed as devDependencies for types and tests only. If the slot contract (`PropsRuntime<'sidebar.workspaces'>`) drifts, `pnpm typecheck` fails before the sidebar can.
-- **`dist/` is committed.** DSH does not run a package's build scripts on install unless you approve them, so the artifacts have to ship with the repository. The `prepare` script stays for a fresh clone.
+- **`dist/` is committed.** DSH blocks a package's build scripts by default — a git install declaring `prepare` is rejected outright unless the profile's `pnpm-workspace.yaml` allows it — so the artifacts ship with the repository and `dist/` is what an install actually loads. CI rebuilds them and fails on any diff, so they cannot drift from the sources.
 - **The client artifact must be a closure factory.** The shell loads `exports["./client"]` as a script and expects it to call `window.__ModuleLoader__.load({ id, factory })`. `tsdown.config.ts` closes the CommonJS chunk inside that factory with banner/footer, keeping the baseline modules (`react`, `react/jsx-runtime`, `@deepseek-ai/dsh-client-ui-primitives`, …) external.
 - **Component tests use a double for the shipped primitives.** Their published ESM entry does not declare the runtime it actually imports (`clsx`, `mdast-*`, `micromark-*`, the shiki grammar catalog), so only the copy the shell seeds into its module table can load it. The jsdom tests therefore substitute `tests/stubs/primitives.tsx`, which keeps the contract this plugin depends on; the appearance itself is the shell's business.
 - **The stylesheet is global.** Plugin CSS is injected into the page rather than a shadow root, so every class name is prefixed `dwo-`.

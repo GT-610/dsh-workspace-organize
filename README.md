@@ -46,14 +46,15 @@ dsh plugin --profile <profile> add dsh-workspace-organize
 dsh plugin --profile <profile> add github:GT-610/dsh-workspace-organize
 ```
 
-装好后重启 DSH 让 Host 重新扫描插件表。
+装好后重启 DSH 让 Host 重新扫描插件表。构建产物 `dist/` 随仓库提交，因此从 git 安装不需要给构建脚本开白名单（DSH 默认阻止包执行构建脚本，带 `prepare` 的包会被直接拒绝安装）。
 
 ### 本地开发
 
 ```sh
 git clone https://github.com/GT-610/dsh-workspace-organize
 cd dsh-workspace-organize
-pnpm install          # 会通过 prepare 脚本自动构建 dist/
+pnpm install          # 开发依赖；dist/ 已提交，克隆后可直接软链使用
+pnpm build            # 改了源码之后再构建 dist/
 ```
 
 再把仓库软链进 profile 的 `node_modules`，重启 DSH：
@@ -124,7 +125,7 @@ pnpm dev         # tsdown --watch
 几点约定，改动前值得先读：
 
 - **类型来自官方发布的包。** `@deepseek-ai/dsh-client-ui-workspace`、`-ui-slots`、`-ui-session`、`-ui-sidebar`、`-ui-layout`、`-ui-renderer` 以及 `@deepseek-ai/dsh-api-*` 都作为 devDependency 安装，只用于类型与测试；槽位契约（`PropsRuntime<'sidebar.workspaces'>`）一旦漂移，`pnpm typecheck` 会先失败，而不是等侧栏崩掉。
-- **`dist/` 是提交进仓库的。** DSH 安装插件时默认不执行包里的构建脚本（需要显式批准），所以交付物必须随仓库一起提供。`prepare` 脚本仍然保留，方便本地克隆后自动构建。
+- **`dist/` 是提交进仓库的。** DSH 默认阻止插件包执行构建脚本（带 `prepare` 的 git 安装会被直接拒绝，除非在 profile 的 `pnpm-workspace.yaml` 里单独放行），所以交付物随仓库提供，`dist/` 里就是安装后真正加载的东西；CI 会重新构建并比对，防止它和源码脱节。
 - **客户端产物必须是闭包工厂。** 外壳以脚本方式加载 `exports["./client"]`，期望它调用 `window.__ModuleLoader__.load({ id, factory })`；`tsdown.config.ts` 用 banner/footer 把 CJS 分块包进这个工厂，并用短横线外的基线模块（`react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives` 等）保持外部依赖。
 - **组件测试用的是官方组件的替身。** 官方 primitives 发布的 ESM 入口并未声明它实际用到的运行时依赖（`clsx`、`mdast-*`、`micromark-*`、shiki 语法目录），只有外壳里被预置的那份 bundle 能加载它。因此 jsdom 测试通过 `tests/stubs/primitives.tsx` 替换它，验证的是插件自己的接线；外观本身由外壳负责。
 - **样式表是全局的。** 插件 CSS 由页面直接注入，不是 shadow root，所以每个类名都带 `dwo-` 前缀。
