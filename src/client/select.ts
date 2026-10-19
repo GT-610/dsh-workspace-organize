@@ -15,6 +15,12 @@ import type { Messages, TimeBucket } from './i18n.ts'
 /** State a row's leading dot can be in, in the shipped primitive's vocabulary. */
 export type RowState = 'idle' | 'warning' | 'ongoing' | 'done'
 
+/**
+ * Archived-row visibility, in the shipped vocabulary: hide them, show them
+ * beside the rest, or show nothing but them.
+ */
+export type ArchivedFilter = 'default' | 'show' | 'only'
+
 /** One row's leading dot plus the text that replaces its timestamp. */
 export interface RowStatus {
   /** Which dot to paint. */
@@ -45,10 +51,14 @@ export function mainSessionId(list: SessionListState): SessionId | undefined {
  * Every other blank stays out of the list — those are the drafts left behind by
  * earlier "new session" clicks, and rendering them put a row named after each
  * workspace's directory in the tree.
+ *
+ * Archived rows follow the filter, exactly as they do in the shipped browser:
+ * hidden by default, shown beside the rest, or shown alone.
  * @param row - the session's list row, when the catalog has it.
  * @param id - the session id being tested.
  * @param main - the retained session id.
  * @param archived - registry-global archive set.
+ * @param archivedFilter - archived-row visibility choice.
  * @returns whether the session belongs in the tree.
  */
 export function sessionShown(
@@ -56,9 +66,15 @@ export function sessionShown(
   id: SessionId,
   main: SessionId | undefined,
   archived: ReadonlySet<SessionId>,
+  archivedFilter: ArchivedFilter = 'default',
 ): boolean {
-  if (row === undefined || archived.has(id)) return false
-  return !row.blank || id === main
+  if (row === undefined) return false
+  if (row.blank && id !== main) return false
+  switch (archivedFilter) {
+    case 'default': return !archived.has(id)
+    case 'show': return true
+    case 'only': return archived.has(id)
+  }
 }
 
 /** What one list derivation reads. */
@@ -73,6 +89,8 @@ export interface SessionSelection {
   archived: ReadonlySet<SessionId>
   /** Trimmed, lower-cased search query; empty lists everything. */
   query: string
+  /** Archived-row visibility choice; omitted hides them. */
+  archivedFilter?: ArchivedFilter
 }
 
 /**
@@ -81,13 +99,15 @@ export interface SessionSelection {
  * A blank placeholder never matches a query: its canonical title is the
  * directory name, so matching it would tie search to one language. The
  * surviving placeholder leads its Workspace, matching the order
- * `sectionMembers` gives placeholders in the shipped tree.
+ * `sectionMembers` gives placeholders in the shipped tree. Archived rows trail
+ * the live ones, which is where the shipped manual order keeps them.
  * @param selection - the snapshots and query to read.
  * @returns visible session ids, placeholder first.
  */
 export function visibleSessionIds(selection: SessionSelection): SessionId[] {
-  const { list, workspace, main, archived, query } = selection
-  const ids = workspace.sessionIds.filter(id => sessionShown(list.byId[id], id, main, archived))
+  const { list, workspace, main, archived, query, archivedFilter = 'default' } = selection
+  const ids = workspace.sessionIds
+    .filter(id => sessionShown(list.byId[id], id, main, archived, archivedFilter))
   if (query !== '') {
     return ids.filter((id) => {
       const row = list.byId[id]
@@ -95,20 +115,32 @@ export function visibleSessionIds(selection: SessionSelection): SessionId[] {
       return row.displayTitle.toLowerCase().includes(query)
     })
   }
-  if (main === undefined || !ids.includes(main)) return [...ids]
-  return [main, ...ids.filter(id => id !== main)]
+  const leading: SessionId[] = []
+  const live: SessionId[] = []
+  const spent: SessionId[] = []
+  for (const id of ids) {
+    if (id === main) leading.push(id)
+    else if (archived.has(id)) spent.push(id)
+    else live.push(id)
+  }
+  return [...leading, ...live, ...spent]
 }
 
 /**
  * Visible rows that actually hold something.
  *
- * The blank placeholder is excluded, so counts and bulk operations agree on
- * what a "session in this group" is.
+ * The blank placeholder is excluded, and so is an archived row even while the
+ * archive filter shows it: group counts and the group-archive confirmation must
+ * agree on what "a session in this group" is, and an archived one is already
+ * out of the way.
  * @param selection - the snapshots and query to read.
- * @returns visible non-blank session ids.
+ * @returns visible non-blank, non-archived session ids.
  */
 export function contentSessionIds(selection: SessionSelection): SessionId[] {
-  return visibleSessionIds(selection).filter(id => selection.list.byId[id]?.blank !== true)
+  return visibleSessionIds(selection).filter((id) => {
+    const row = selection.list.byId[id]
+    return row !== undefined && !row.blank && !selection.archived.has(id)
+  })
 }
 
 /** Copy key for each pending-interaction kind the shipped rows label. */
