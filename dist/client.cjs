@@ -93,6 +93,8 @@ function normalizeGroupDocument(raw) {
 const GROUPS_STORAGE_KEY = "workspaceOrganize.groups";
 /** Mirror key for the explicit disclosure choices. */
 const EXPANSION_STORAGE_KEY = "workspaceOrganize.expansion";
+/** Mirror key for the archived-row visibility choice. */
+const ARCHIVED_FILTER_STORAGE_KEY = "workspaceOrganize.archivedFilter";
 /** A fresh group id. Opaque and unique enough for one document. */
 function newGroupId() {
 	return `g-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
@@ -164,6 +166,27 @@ function saveExpansion(next) {
 		localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify(next));
 	} catch {}
 }
+/**
+* Read the mirrored archived-row visibility choice.
+* @returns the stored choice, or `'default'` (hide archived rows).
+*/
+function loadArchivedFilter() {
+	try {
+		const raw = localStorage.getItem(ARCHIVED_FILTER_STORAGE_KEY);
+		return raw === "show" || raw === "only" ? raw : "default";
+	} catch {
+		return "default";
+	}
+}
+/**
+* Mirror the archived-row visibility choice for the next reload.
+* @param next - the chosen filter.
+*/
+function saveArchivedFilter(next) {
+	try {
+		localStorage.setItem(ARCHIVED_FILTER_STORAGE_KEY, next);
+	} catch {}
+}
 //#endregion
 //#region src/client/i18n.ts
 const EN = {
@@ -182,6 +205,12 @@ const EN = {
 	noSessions: "No sessions",
 	noMatches: "No matches",
 	emptyGroup: "Move workspaces here from their ⋯ menu",
+	hideArchived: "Hide archived sessions",
+	showArchived: "All sessions (show archived)",
+	onlyArchived: "Only archived sessions",
+	archivedOnlyEmpty: "No archived sessions yet",
+	showAllSessions: "Show all sessions",
+	archivedNotOpenable: "Archived sessions cannot be opened. Restore it to view.",
 	newSession: "New session in this workspace",
 	blankSession: "New Session",
 	workspaceMenu: "Workspace menu",
@@ -236,6 +265,12 @@ const ZH = {
 	noSessions: "暂无会话",
 	noMatches: "无匹配",
 	emptyGroup: "从工作区的 ⋯ 菜单移入工作区",
+	hideArchived: "隐藏已归档会话",
+	showArchived: "全部会话(含已归档)",
+	onlyArchived: "只看已归档会话",
+	archivedOnlyEmpty: "暂无已归档会话",
+	showAllSessions: "显示全部会话",
+	archivedNotOpenable: "已归档会话暂时无法查看，请从归档恢复后再查看。",
 	newSession: "在此工作区新建会话",
 	blankSession: "新会话",
 	workspaceMenu: "工作区菜单",
@@ -552,6 +587,8 @@ const STYLES = `
 .dwo-count { display:inline-flex; align-items:center; gap:4px; }
 .dwo-session-row.archived .dwo-row-title { color:var(--dsw-alias-label-caption); }
 .dwo-empty { padding:16px 12px; font-size:13px; line-height:20px; color:var(--dsw-alias-label-tertiary); }
+.dwo-empty-link { border:none; background:transparent; padding:0; cursor:pointer; font:inherit; color:var(--dsw-alias-link); }
+.dwo-empty-link:hover { text-decoration:underline; }
 .dwo-ws-sessions { display:flex; flex-direction:column; }
 .dwo-ws-sessions > * + * { margin-top:2px; }
 
@@ -598,6 +635,7 @@ function GroupedBrowser(props) {
 	const [query, setQuery] = (0, react.useState)("");
 	const [searchOpen, setSearchOpen] = (0, react.useState)(false);
 	const [expansion, setExpansion] = (0, react.useState)(loadExpansion);
+	const [archivedFilter, setArchivedFilter] = (0, react.useState)(loadArchivedFilter);
 	const [menu, setMenu] = (0, react.useState)(void 0);
 	const [dialog, setDialog] = (0, react.useState)(void 0);
 	const [busy, setBusy] = (0, react.useState)(false);
@@ -655,6 +693,10 @@ function GroupedBrowser(props) {
 		setExpansion(next);
 		saveExpansion(next);
 	}, []);
+	const chooseArchivedFilter = (0, react.useCallback)((next) => {
+		setArchivedFilter(next);
+		saveArchivedFilter(next);
+	}, []);
 	const setExpanded = (key, value) => {
 		persistExpansion({
 			...expansion,
@@ -663,11 +705,12 @@ function GroupedBrowser(props) {
 	};
 	/**
 	* Whether a node renders its children. A search forces everything open so
-	* matches are reachable; otherwise an explicit choice wins and the fallback
-	* covers the untouched default.
+	* matches are reachable, and so does the archived-only filter, for the same
+	* reason; otherwise an explicit choice wins and the fallback covers the
+	* untouched default.
 	*/
 	const isExpanded = (key, fallback) => {
-		if (normalizedQuery !== "") return true;
+		if (normalizedQuery !== "" || archivedFilter === "only") return true;
 		const explicit = expansion[key];
 		return explicit === void 0 ? fallback : explicit;
 	};
@@ -677,12 +720,35 @@ function GroupedBrowser(props) {
 		workspace,
 		main,
 		archived,
-		query: normalizedQuery
+		query: normalizedQuery,
+		archivedFilter
 	});
+	const hasVisibleContent = archivedFilter !== "only" || workspaces.some((workspace) => visibleSessionIds(selectFor(workspace)).length > 0);
+	/**
+	* The sessions a group-level operation may act on.
+	*
+	* Deliberately independent of the current search and archive filter: the
+	* confirmation counts exactly what the operation will touch, so archiving a
+	* group while a search is typed cannot promise three rows and archive ten.
+	* @param workspace - one member Workspace.
+	* @returns its non-blank, non-archived session ids.
+	*/
+	const contentOf = (workspace) => contentSessionIds({
+		...selectFor(workspace),
+		query: "",
+		archivedFilter: "default"
+	});
+	/**
+	* Archive one Session, retrying once through the stop-then-archive path.
+	*
+	* The Host refuses to archive a Session with running work, and that refusal is
+	* the only failure worth a second attempt: the retry asks it to stop the work
+	* first. Every other failure is reported and left alone.
+	* @param sessionId - the Session to archive.
+	*/
+	const archiveWithFallback = (sessionId) => services.archiveSession(sessionId).catch(() => services.archiveSession(sessionId, { stopActivity: true }));
 	const archiveOne = (sessionId) => {
-		services.archiveSession(sessionId).catch(() => {
-			services.archiveSession(sessionId, { stopActivity: true }).catch((error) => console.warn("workspace-organize: archive refused", sessionId, error));
-		});
+		archiveWithFallback(sessionId).catch((error) => console.warn("workspace-organize: archive refused", sessionId, error));
 	};
 	/**
 	* Open a row menu at a viewport point.
@@ -699,7 +765,8 @@ function GroupedBrowser(props) {
 			rowKey,
 			at,
 			items: spec.items,
-			actions: spec.actions
+			actions: spec.actions,
+			selectedId: spec.selectedId
 		});
 	};
 	/** Right-click wiring for one row. */
@@ -757,6 +824,7 @@ function GroupedBrowser(props) {
 			"data-row-key": `session:${sessionId}`,
 			"aria-level": 3,
 			"aria-selected": currentSessionId === sessionId,
+			"aria-description": isArchived ? messages.archivedNotOpenable : void 0,
 			style: indent(depth),
 			"data-session-id": sessionId,
 			onClick: () => {
@@ -943,7 +1011,7 @@ function GroupedBrowser(props) {
 		const key = `g:${group.id}`;
 		const isOpen = isExpanded(key, true);
 		const members = group.workspaceIds.map((id) => workspaces.find((workspace) => workspace.workspaceId === id)).filter((member) => member !== void 0);
-		const sessionCount = members.reduce((total, member) => total + contentSessionIds(selectFor(member)).length, 0);
+		const sessionCount = members.flatMap((member) => contentOf(member)).length;
 		const { running, pending } = groupRollUp(members, statuses, archived);
 		const state = pending > 0 ? "warning" : running > 0 ? "ongoing" : void 0;
 		const summary = [`${members.length} ${messages.unitWorkspaces}`];
@@ -1067,17 +1135,14 @@ function GroupedBrowser(props) {
 		}, group.id);
 	};
 	const confirmArchiveGroup = async (groupId) => {
-		const group = (groups ?? []).find((candidate) => candidate.id === groupId);
+		const group = groups?.find((candidate) => candidate.id === groupId);
 		if (group === void 0) return;
 		setBusy(true);
 		try {
 			for (const workspaceId of group.workspaceIds) {
 				const workspace = workspaces.find((candidate) => candidate.workspaceId === workspaceId);
 				if (workspace === void 0) continue;
-				for (const sessionId of workspace.sessionIds) {
-					if (archived.has(sessionId) || list.byId[sessionId]?.blank === true) continue;
-					await services.archiveSession(sessionId).catch(() => services.archiveSession(sessionId, { stopActivity: true })).catch((error) => console.warn("workspace-organize: archive refused", sessionId, error));
-				}
+				for (const sessionId of contentOf(workspace)) await archiveWithFallback(sessionId).catch((error) => console.warn("workspace-organize: archive refused", sessionId, error));
 			}
 		} finally {
 			setBusy(false);
@@ -1125,13 +1190,33 @@ function GroupedBrowser(props) {
 				id: "collapseAll",
 				label: messages.collapseAll,
 				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronsUpDownOutlineRegular, {})
+			},
+			{
+				type: "separator",
+				id: "archived-separator"
+			},
+			{
+				id: "hideArchived",
+				label: messages.hideArchived
+			},
+			{
+				id: "showArchived",
+				label: messages.showArchived
+			},
+			{
+				id: "onlyArchived",
+				label: messages.onlyArchived
 			}
 		],
 		actions: {
 			newGroup: () => setDialog({ kind: "createGroup" }),
 			expandAll: () => setAllExpanded(true),
-			collapseAll: () => setAllExpanded(false)
-		}
+			collapseAll: () => setAllExpanded(false),
+			hideArchived: () => chooseArchivedFilter("default"),
+			showArchived: () => chooseArchivedFilter("show"),
+			onlyArchived: () => chooseArchivedFilter("only")
+		},
+		selectedId: archivedFilter === "default" ? "hideArchived" : archivedFilter === "show" ? "showArchived" : "onlyArchived"
 	};
 	const pendingLoad = groups === void 0 || !workspaceReady;
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -1225,6 +1310,8 @@ function GroupedBrowser(props) {
 				children: messages.loading
 			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "dwo-list",
+				role: "tree",
+				"aria-label": messages.organizeTitle,
 				children: [
 					(groups ?? []).map((group) => groupNode(group, 0)),
 					(groups ?? []).length > 0 && ungrouped.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
@@ -1235,6 +1322,19 @@ function GroupedBrowser(props) {
 					(groups ?? []).length === 0 && ungrouped.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: "dwo-empty",
 						children: messages.noWorkspaces
+					}),
+					archivedFilter === "only" && hasVisibleContent === false && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dwo-empty",
+						children: [
+							messages.archivedOnlyEmpty,
+							" ",
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "dwo-empty-link",
+								onClick: () => chooseArchivedFilter("default"),
+								children: messages.showAllSessions
+							})
+						]
 					})
 				]
 			}),
@@ -1251,6 +1351,7 @@ function GroupedBrowser(props) {
 				}),
 				getAnchorRect: () => new DOMRect(menu.at.x, menu.at.y, 0, 0),
 				items: menu.items,
+				selectedId: menu.selectedId,
 				onSelect: (id) => {
 					setMenu(void 0);
 					menu.actions[id]?.();

@@ -12,12 +12,16 @@ import {
   normalizeGroupDocument,
   type GroupDocument,
 } from '../shared/contract.ts'
+import type { ArchivedFilter } from './select.ts'
 
 /** Mirror key for the group document. */
 export const GROUPS_STORAGE_KEY = 'workspaceOrganize.groups'
 
 /** Mirror key for the explicit disclosure choices. */
 export const EXPANSION_STORAGE_KEY = 'workspaceOrganize.expansion'
+
+/** Mirror key for the archived-row visibility choice. */
+export const ARCHIVED_FILTER_STORAGE_KEY = 'workspaceOrganize.archivedFilter'
 
 /** Disclosure choices by node key: `g:<id>` for a group, `ws:<id>` for a workspace. */
 export type ExpansionState = Readonly<Record<string, boolean>>
@@ -103,5 +107,30 @@ export function saveExpansion(next: ExpansionState): void {
     localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify(next))
   } catch {
     // Private mode: choices simply do not survive the reload.
+  }
+}
+
+/**
+ * Read the mirrored archived-row visibility choice.
+ * @returns the stored choice, or `'default'` (hide archived rows).
+ */
+export function loadArchivedFilter(): ArchivedFilter {
+  try {
+    const raw = localStorage.getItem(ARCHIVED_FILTER_STORAGE_KEY)
+    return raw === 'show' || raw === 'only' ? raw : 'default'
+  } catch {
+    return 'default'
+  }
+}
+
+/**
+ * Mirror the archived-row visibility choice for the next reload.
+ * @param next - the chosen filter.
+ */
+export function saveArchivedFilter(next: ArchivedFilter): void {
+  try {
+    localStorage.setItem(ARCHIVED_FILTER_STORAGE_KEY, next)
+  } catch {
+    // Private mode: the choice simply does not survive the reload.
   }
 }

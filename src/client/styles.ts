@@ -60,6 +60,8 @@ export const STYLES = `
 .dwo-count { display:inline-flex; align-items:center; gap:4px; }
 .dwo-session-row.archived .dwo-row-title { color:var(--dsw-alias-label-caption); }
 .dwo-empty { padding:16px 12px; font-size:13px; line-height:20px; color:var(--dsw-alias-label-tertiary); }
+.dwo-empty-link { border:none; background:transparent; padding:0; cursor:pointer; font:inherit; color:var(--dsw-alias-link); }
+.dwo-empty-link:hover { text-decoration:underline; }
 .dwo-ws-sessions { display:flex; flex-direction:column; }
 .dwo-ws-sessions > * + * { margin-top:2px; }
 

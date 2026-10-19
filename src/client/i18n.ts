@@ -29,6 +29,13 @@ export interface Messages {
   noSessions: string
   noMatches: string
   emptyGroup: string
+  // Archived-row visibility
+  hideArchived: string
+  showArchived: string
+  onlyArchived: string
+  archivedOnlyEmpty: string
+  showAllSessions: string
+  archivedNotOpenable: string
   // Rows
   newSession: string
   blankSession: string
@@ -87,6 +94,12 @@ const EN: Messages = {
   noSessions: 'No sessions',
   noMatches: 'No matches',
   emptyGroup: 'Move workspaces here from their ⋯ menu',
+  hideArchived: 'Hide archived sessions',
+  showArchived: 'All sessions (show archived)',
+  onlyArchived: 'Only archived sessions',
+  archivedOnlyEmpty: 'No archived sessions yet',
+  showAllSessions: 'Show all sessions',
+  archivedNotOpenable: 'Archived sessions cannot be opened. Restore it to view.',
   newSession: 'New session in this workspace',
   blankSession: 'New Session',
   workspaceMenu: 'Workspace menu',
@@ -142,6 +155,12 @@ const ZH: Messages = {
   noSessions: '暂无会话',
   noMatches: '无匹配',
   emptyGroup: '从工作区的 ⋯ 菜单移入工作区',
+  hideArchived: '隐藏已归档会话',
+  showArchived: '全部会话(含已归档)',
+  onlyArchived: '只看已归档会话',
+  archivedOnlyEmpty: '暂无已归档会话',
+  showAllSessions: '显示全部会话',
+  archivedNotOpenable: '已归档会话暂时无法查看，请从归档恢复后再查看。',
   newSession: '在此工作区新建会话',
   blankSession: '新会话',
   workspaceMenu: '工作区菜单',

@@ -28,6 +28,7 @@ import {
   Modal,
   StateDot,
   Tooltip,
+  type MenuEntry,
   type MenuItem,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
@@ -37,9 +38,11 @@ import type { WorkspaceGroup } from '../shared/contract.ts'
 import type { OrganizeBrowserProps } from './contract.ts'
 import { asWorkspaceId } from './contract.ts'
 import {
+  loadArchivedFilter,
   loadExpansion,
   loadGroupDocument,
   newGroupId,
+  saveArchivedFilter,
   saveExpansion,
   saveGroupDocument,
   type ExpansionState,
@@ -52,6 +55,7 @@ import {
   rowStatus,
   timeLabel,
   visibleSessionIds,
+  type ArchivedFilter,
   type SessionSelection,
 } from './select.ts'
 import { STYLES } from './styles.ts'
@@ -73,15 +77,19 @@ interface OpenMenu {
   /** Viewport point the card hangs from. */
   at: { x: number; y: number }
   /** Data rows for the shipped `Menu`. */
-  items: MenuItem[]
+  items: MenuEntry[]
   /** Row id to its action; a submenu parent has no entry. */
   actions: Readonly<Record<string, () => void>>
+  /** Row shown as selected, for a menu whose rows are options. */
+  selectedId?: string | undefined
 }
 
 /** One row menu's content, built at open time from live state. */
 interface MenuSpec {
-  items: MenuItem[]
+  items: MenuEntry[]
   actions: Record<string, () => void>
+  /** Row shown as selected, for a menu whose rows are options. */
+  selectedId?: string
 }
 
 /** Inline indent for one row, consumed by the shared row padding rule. */
@@ -119,6 +127,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   // default": workspaces rest collapsed and groups rest open, which is what
   // keeps the tree from opening as a wall of session rows.
   const [expansion, setExpansion] = useState<ExpansionState>(loadExpansion)
+  const [archivedFilter, setArchivedFilter] = useState<ArchivedFilter>(loadArchivedFilter)
   const [menu, setMenu] = useState<OpenMenu | undefined>(undefined)
   const [dialog, setDialog] = useState<Dialog | undefined>(undefined)
   const [busy, setBusy] = useState(false)
@@ -189,17 +198,23 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     saveExpansion(next)
   }, [])
 
+  const chooseArchivedFilter = useCallback((next: ArchivedFilter) => {
+    setArchivedFilter(next)
+    saveArchivedFilter(next)
+  }, [])
+
   const setExpanded = (key: string, value: boolean): void => {
     persistExpansion({ ...expansion, [key]: value })
   }
 
   /**
    * Whether a node renders its children. A search forces everything open so
-   * matches are reachable; otherwise an explicit choice wins and the fallback
-   * covers the untouched default.
+   * matches are reachable, and so does the archived-only filter, for the same
+   * reason; otherwise an explicit choice wins and the fallback covers the
+   * untouched default.
    */
   const isExpanded = (key: string, fallback: boolean): boolean => {
-    if (normalizedQuery !== '') return true
+    if (normalizedQuery !== '' || archivedFilter === 'only') return true
     const explicit = expansion[key]
     return explicit === undefined ? fallback : explicit
   }
@@ -211,14 +226,42 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     main,
     archived,
     query: normalizedQuery,
+    archivedFilter,
   })
 
+  // Whether any row would render at all. Only the archived-only filter needs it:
+  // an install with nothing archived must say so once, rather than repeat the
+  // same line under every Workspace.
+  const hasVisibleContent = archivedFilter !== 'only'
+    || workspaces.some(workspace => visibleSessionIds(selectFor(workspace)).length > 0)
+
+  /**
+   * The sessions a group-level operation may act on.
+   *
+   * Deliberately independent of the current search and archive filter: the
+   * confirmation counts exactly what the operation will touch, so archiving a
+   * group while a search is typed cannot promise three rows and archive ten.
+   * @param workspace - one member Workspace.
+   * @returns its non-blank, non-archived session ids.
+   */
+  const contentOf = (workspace: SessionSelection['workspace']): SessionId[] =>
+    contentSessionIds({ ...selectFor(workspace), query: '', archivedFilter: 'default' })
+
+  /**
+   * Archive one Session, retrying once through the stop-then-archive path.
+   *
+   * The Host refuses to archive a Session with running work, and that refusal is
+   * the only failure worth a second attempt: the retry asks it to stop the work
+   * first. Every other failure is reported and left alone.
+   * @param sessionId - the Session to archive.
+   */
+  const archiveWithFallback = (sessionId: SessionId): Promise<void> =>
+    services.archiveSession(sessionId).catch(() =>
+      services.archiveSession(sessionId, { stopActivity: true }))
+
   const archiveOne = (sessionId: SessionId): void => {
-    void services.archiveSession(sessionId).catch(() => {
-      // Active-work refusal: retry once with the official stop-then-archive path.
-      void services.archiveSession(sessionId, { stopActivity: true })
-        .catch(error => console.warn('workspace-organize: archive refused', sessionId, error))
-    })
+    void archiveWithFallback(sessionId)
+      .catch(error => console.warn('workspace-organize: archive refused', sessionId, error))
   }
 
   /**
@@ -232,7 +275,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
    * arbitration and stack two menus on every right-click.
    */
   const openMenu = (rowKey: string, spec: MenuSpec, at: { x: number; y: number }): void => {
-    setMenu({ rowKey, at, items: spec.items, actions: spec.actions })
+    setMenu({ rowKey, at, items: spec.items, actions: spec.actions, selectedId: spec.selectedId })
   }
 
   /** Right-click wiring for one row. */
@@ -284,6 +327,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         data-row-key={`session:${sessionId}`}
         aria-level={3}
         aria-selected={currentSessionId === sessionId}
+        aria-description={isArchived ? messages.archivedNotOpenable : undefined}
         style={indent(depth)}
         data-session-id={sessionId}
         onClick={() => { if (!isArchived) services.openSession(sessionId) }}
@@ -439,8 +483,10 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     const members = group.workspaceIds
       .map(id => workspaces.find(workspace => workspace.workspaceId === id))
       .filter(member => member !== undefined)
-    const sessionCount = members
-      .reduce((total, member) => total + contentSessionIds(selectFor(member)).length, 0)
+    // The count and the confirmation use the same derivation as the operation
+    // itself, so the number promised is the number archived.
+    const content = members.flatMap(member => contentOf(member))
+    const sessionCount = content.length
     const { running, pending } = groupRollUp(members, statuses, archived)
     const state = pending > 0 ? 'warning' : running > 0 ? 'ongoing' : undefined
     const summary = [`${members.length} ${messages.unitWorkspaces}`]
@@ -530,19 +576,17 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   }
 
   const confirmArchiveGroup = async (groupId: string): Promise<void> => {
-    const group = (groups ?? []).find(candidate => candidate.id === groupId)
+    const group = groups?.find(candidate => candidate.id === groupId)
     if (group === undefined) return
     setBusy(true)
     try {
       for (const workspaceId of group.workspaceIds) {
         const workspace = workspaces.find(candidate => candidate.workspaceId === workspaceId)
         if (workspace === undefined) continue
-        for (const sessionId of workspace.sessionIds) {
-          // Archived rows are already archived, and a blank placeholder has no
-          // content to archive: exactly the members the count promised.
-          if (archived.has(sessionId) || list.byId[sessionId]?.blank === true) continue
-          await services.archiveSession(sessionId)
-            .catch(() => services.archiveSession(sessionId, { stopActivity: true }))
+        for (const sessionId of contentOf(workspace)) {
+          // `contentOf` already drops archived rows and the blank placeholder:
+          // exactly the members the count promised.
+          await archiveWithFallback(sessionId)
             .catch(error => console.warn('workspace-organize: archive refused', sessionId, error))
         }
       }
@@ -588,12 +632,22 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       { id: 'newGroup', label: messages.newGroup, icon: <IconProjectAddOutlineRegular /> },
       { id: 'expandAll', label: messages.expandAll, icon: <IconChevronsUpDownOutlineRegular /> },
       { id: 'collapseAll', label: messages.collapseAll, icon: <IconChevronsUpDownOutlineRegular /> },
+      { type: 'separator', id: 'archived-separator' },
+      { id: 'hideArchived', label: messages.hideArchived },
+      { id: 'showArchived', label: messages.showArchived },
+      { id: 'onlyArchived', label: messages.onlyArchived },
     ],
     actions: {
       newGroup: () => setDialog({ kind: 'createGroup' }),
       expandAll: () => setAllExpanded(true),
       collapseAll: () => setAllExpanded(false),
+      hideArchived: () => chooseArchivedFilter('default'),
+      showArchived: () => chooseArchivedFilter('show'),
+      onlyArchived: () => chooseArchivedFilter('only'),
     },
+    selectedId: archivedFilter === 'default'
+      ? 'hideArchived'
+      : archivedFilter === 'show' ? 'showArchived' : 'onlyArchived',
   }
 
   const pendingLoad = groups === undefined || !workspaceReady
@@ -664,7 +718,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       {pendingLoad
         ? <div className="dwo-empty">{messages.loading}</div>
         : (
-            <div className="dwo-list">
+            <div className="dwo-list" role="tree" aria-label={messages.organizeTitle}>
               {(groups ?? []).map(group => groupNode(group, 0))}
               {(groups ?? []).length > 0 && ungrouped.length > 0 && (
                 <div className="dwo-sep">{messages.ungrouped}</div>
@@ -672,6 +726,19 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
               {ungrouped.map(workspace => workspaceRow(workspace, 0))}
               {(groups ?? []).length === 0 && ungrouped.length === 0 && (
                 <div className="dwo-empty">{messages.noWorkspaces}</div>
+              )}
+              {archivedFilter === 'only' && hasVisibleContent === false && (
+                <div className="dwo-empty">
+                  {messages.archivedOnlyEmpty}
+                  {' '}
+                  <button
+                    type="button"
+                    className="dwo-empty-link"
+                    onClick={() => chooseArchivedFilter('default')}
+                  >
+                    {messages.showAllSessions}
+                  </button>
+                </div>
               )}
             </div>
           )}
@@ -682,6 +749,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           anchor={<span className="dwo-anchor" style={{ position: 'fixed', left: menu.at.x, top: menu.at.y }} />}
           getAnchorRect={() => new DOMRect(menu.at.x, menu.at.y, 0, 0)}
           items={menu.items}
+          selectedId={menu.selectedId}
           onSelect={(id) => {
             setMenu(undefined)
             menu.actions[id]?.()
