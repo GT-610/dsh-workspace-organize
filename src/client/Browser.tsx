@@ -717,17 +717,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       </div>
       {pendingLoad
         ? <div className="dwo-empty">{messages.loading}</div>
-        : (
-            <div className="dwo-list" role="tree" aria-label={messages.organizeTitle}>
-              {(groups ?? []).map(group => groupNode(group, 0))}
-              {(groups ?? []).length > 0 && ungrouped.length > 0 && (
-                <div className="dwo-sep">{messages.ungrouped}</div>
-              )}
-              {ungrouped.map(workspace => workspaceRow(workspace, 0))}
-              {(groups ?? []).length === 0 && ungrouped.length === 0 && (
-                <div className="dwo-empty">{messages.noWorkspaces}</div>
-              )}
-              {archivedFilter === 'only' && hasVisibleContent === false && (
+        : archivedFilter === 'only' && !hasVisibleContent
+          ? (
+              <div className="dwo-list" role="tree" aria-label={messages.organizeTitle}>
                 <div className="dwo-empty">
                   {messages.archivedOnlyEmpty}
                   {' '}
@@ -739,9 +731,20 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
                     {messages.showAllSessions}
                   </button>
                 </div>
-              )}
-            </div>
-          )}
+              </div>
+            )
+          : (
+              <div className="dwo-list" role="tree" aria-label={messages.organizeTitle}>
+                {(groups ?? []).map(group => groupNode(group, 0))}
+                {(groups ?? []).length > 0 && ungrouped.length > 0 && (
+                  <div className="dwo-sep">{messages.ungrouped}</div>
+                )}
+                {ungrouped.map(workspace => workspaceRow(workspace, 0))}
+                {(groups ?? []).length === 0 && ungrouped.length === 0 && (
+                  <div className="dwo-empty">{messages.noWorkspaces}</div>
+                )}
+              </div>
+            )}
       {menu !== undefined && (
         <Menu
           open

@@ -1308,6 +1308,23 @@ function GroupedBrowser(props) {
 			pendingLoad ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 				className: "dwo-empty",
 				children: messages.loading
+			}) : archivedFilter === "only" && !hasVisibleContent ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: "dwo-list",
+				role: "tree",
+				"aria-label": messages.organizeTitle,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dwo-empty",
+					children: [
+						messages.archivedOnlyEmpty,
+						" ",
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							className: "dwo-empty-link",
+							onClick: () => chooseArchivedFilter("default"),
+							children: messages.showAllSessions
+						})
+					]
+				})
 			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "dwo-list",
 				role: "tree",
@@ -1322,19 +1339,6 @@ function GroupedBrowser(props) {
 					(groups ?? []).length === 0 && ungrouped.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: "dwo-empty",
 						children: messages.noWorkspaces
-					}),
-					archivedFilter === "only" && hasVisibleContent === false && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dwo-empty",
-						children: [
-							messages.archivedOnlyEmpty,
-							" ",
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "dwo-empty-link",
-								onClick: () => chooseArchivedFilter("default"),
-								children: messages.showAllSessions
-							})
-						]
 					})
 				]
 			}),
