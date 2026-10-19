@@ -88,6 +88,9 @@ function readBody(req) {
   })
 }
 
+/** Activation waits for the web carrier so the route registers on first boot. */
+export const inject = ['webServer']
+
 /**
  * Plugin apply: register the route and return its disposer.
  * @param ctx - Host Cordis context.
