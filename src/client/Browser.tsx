@@ -169,7 +169,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       })
       return changed ? next : current
     })
-  }, [workspaceReady, workspaces]) // eslint-disable-line react-hooks/exhaustive-deps
+    // `groups` is read only as the "loaded yet?" guard; including it would rerun
+    // this pruning on every edit the effect itself makes.
+  }, [workspaceReady, workspaces, groups])
 
   const groupedIds = useMemo(
     () => new Set((groups ?? []).flatMap(group => group.workspaceIds)),

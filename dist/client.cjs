@@ -694,7 +694,11 @@ function GroupedBrowser(props) {
 			});
 			return changed ? next : current;
 		});
-	}, [workspaceReady, workspaces]);
+	}, [
+		workspaceReady,
+		workspaces,
+		groups
+	]);
 	const groupedIds = (0, react.useMemo)(() => new Set((groups ?? []).flatMap((group) => group.workspaceIds)), [groups]);
 	const ungrouped = (0, react.useMemo)(() => workspaces.filter((workspace) => !groupedIds.has(workspace.workspaceId)), [workspaces, groupedIds]);
 	const normalizedQuery = query.trim().toLowerCase();
