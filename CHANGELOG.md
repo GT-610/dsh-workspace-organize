@@ -33,9 +33,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `cache-control: no-store` — the client asks with `cache: 'no-store'` — so a
   reload cannot render a remembered copy of the group document.
 - The document limits agree. Members were capped per group and groups per
-  document, which allowed a document the validator accepted but the 1 MiB body
-  cap refused; a whole-document member cap makes the structural limits fit the
-  body cap, with a test that builds a document at them and measures it.
+  document, which allowed a document the validator accepted but the body cap
+  refused; a whole-document member cap makes the structural limits fit, with a
+  test that builds a document at them and measures it. The body cap itself is
+  now sized in bytes as the route counts them: at 1 MB it was measured in
+  characters, so a legal document whose ids were control characters — six bytes
+  each as `\uXXXX` — encoded past it and was refused before validation ran.
+  It is 2 MiB, above the measured worst case.
 - A workspace is placed at most once. A document naming the same workspace in
   two groups, or twice in one, is normalized to the first occurrence instead of
   rendering it under both headings.
