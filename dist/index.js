@@ -33,6 +33,11 @@ function isBoundedId(value, limit) {
 *
 * Unknown extra fields are dropped, so a document written by a later version
 * still loads; a malformed one is rejected whole rather than partially applied.
+*
+* One normalization is worth naming: a Workspace may appear at most once in the
+* document, because a Workspace lives in one group. A repeated member is dropped
+* rather than rejected whole — the same treatment an unknown field gets — so a
+* hand-edited file with a stray duplicate still opens.
 * @param raw - parsed JSON body or file content.
 * @returns the normalized document, or `null` when the shape is invalid.
 */
@@ -40,20 +45,30 @@ function normalizeGroupDocument(raw) {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
 	const groups = raw.groups;
 	if (!Array.isArray(groups) || groups.length > 200) return null;
-	const seen = /* @__PURE__ */ new Set();
+	const seenIds = /* @__PURE__ */ new Set();
+	const placed = /* @__PURE__ */ new Set();
 	const out = [];
+	let total = 0;
 	for (const group of groups) {
 		if (group === null || typeof group !== "object" || Array.isArray(group)) return null;
 		const { id, name, workspaceIds } = group;
 		if (!isBoundedId(id, 128) || typeof name !== "string" || name.length > 200) return null;
-		if (seen.has(id)) return null;
-		seen.add(id);
+		if (seenIds.has(id)) return null;
+		seenIds.add(id);
 		if (!Array.isArray(workspaceIds) || workspaceIds.length > 500) return null;
-		if (!workspaceIds.every((member) => isBoundedId(member, 128))) return null;
+		const members = [];
+		for (const member of workspaceIds) {
+			if (!isBoundedId(member, 128)) return null;
+			if (placed.has(member)) continue;
+			placed.add(member);
+			members.push(member);
+		}
+		total += members.length;
+		if (total > 2e3) return null;
 		out.push({
 			id,
 			name,
-			workspaceIds: [...workspaceIds]
+			workspaceIds: members
 		});
 	}
 	return {
@@ -109,7 +124,7 @@ function readBody(req) {
 		let size = 0;
 		req.on("data", (chunk) => {
 			size += chunk.length;
-			if (size > 1e6) {
+			if (size > 2097152) {
 				reject(/* @__PURE__ */ new Error("body too large"));
 				req.destroy();
 				return;
@@ -128,7 +143,7 @@ function readBody(req) {
 function apply(ctx) {
 	const webServer = ctx.get("webServer");
 	if (webServer === void 0) {
-		ctx.logger?.warn?.("workspace-organize: webServer service is unavailable; groups stay browser-local");
+		ctx.logger.warn("workspace-organize: webServer service is unavailable; groups stay browser-local");
 		return;
 	}
 	const home = process.env.DSH_HOME ?? join(homedir(), ".dsh");
@@ -159,6 +174,11 @@ function apply(ctx) {
 		const reply = (code, body) => {
 			res.statusCode = code;
 			res.setHeader("content-type", "application/json; charset=utf-8");
+			res.setHeader("cache-control", "no-store");
+			if (req.method === "HEAD") {
+				res.end();
+				return;
+			}
 			res.end(JSON.stringify(body));
 		};
 		try {
@@ -190,7 +210,7 @@ function apply(ctx) {
 			cache = doc;
 			reply(200, doc);
 		} catch (error) {
-			ctx.logger?.warn?.(`workspace-organize: ${req.method ?? "GET"} ${GROUP_ROUTE} failed: ${String(error)}`);
+			ctx.logger.warn(`workspace-organize: ${req.method ?? "GET"} ${GROUP_ROUTE} failed: ${String(error)}`);
 			reply(500, { error: "internal error" });
 		}
 	};

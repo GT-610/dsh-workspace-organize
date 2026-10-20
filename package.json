@@ -19,6 +19,7 @@
   "bugs": "https://github.com/GT-610/dsh-workspace-organize/issues",
   "author": "GT610 (https://github.com/GT-610)",
   "license": "MIT",
+  "icon": "./icon.svg",
   "type": "module",
   "publishConfig": {
     "access": "public"
@@ -61,7 +62,8 @@
     "lint:fix": "oxlint --fix",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "tsc --noEmit && oxlint && vitest run && tsdown",
+    "check:bundle": "node scripts/check-client-purity.mjs",
+    "check": "tsc --noEmit && oxlint && vitest run && tsdown && node scripts/check-client-purity.mjs",
     "prepublishOnly": "npm run check"
   },
   "peerDependencies": {
@@ -76,7 +78,6 @@
     "@deepseek-ai/cordis": "~4.0.5",
     "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.2",
     "@deepseek-ai/dsh-api-workspace-controller": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-locale": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-store": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-rc.2",
@@ -93,7 +94,6 @@
     "@types/node": "^22.15.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.0",
-    "clsx": "^2.1.1",
     "jsdom": "^30.1.3",
     "oxlint": "^1.88.0",
     "react": "^18.3.1",

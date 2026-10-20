@@ -12,12 +12,16 @@ import {
   normalizeGroupDocument,
   type GroupDocument,
 } from '../shared/contract.ts'
+import type { ArchivedFilter } from './select.ts'
 
 /** Mirror key for the group document. */
 export const GROUPS_STORAGE_KEY = 'workspaceOrganize.groups'
 
 /** Mirror key for the explicit disclosure choices. */
 export const EXPANSION_STORAGE_KEY = 'workspaceOrganize.expansion'
+
+/** Mirror key for the archived-row visibility choice. */
+export const ARCHIVED_FILTER_STORAGE_KEY = 'workspaceOrganize.archivedFilter'
 
 /** Disclosure choices by node key: `g:<id>` for a group, `ws:<id>` for a workspace. */
 export type ExpansionState = Readonly<Record<string, boolean>>
@@ -45,7 +49,9 @@ function mirroredDocument(): GroupDocument | undefined {
 export async function loadGroupDocument(): Promise<GroupDocument> {
   const fallback = mirroredDocument()
   try {
-    const response = await fetch(GROUP_ROUTE)
+    // `no-store` because the Host answers live plugin state: a cached response
+    // would render a group tree that another window has already replaced.
+    const response = await fetch(GROUP_ROUTE, { cache: 'no-store' })
     if (response.ok) {
       const doc = normalizeGroupDocument(await response.json())
       if (doc !== null) return doc
@@ -95,6 +101,25 @@ export function loadExpansion(): ExpansionState {
 }
 
 /**
+ * Keep only the disclosure choices whose node still exists.
+ *
+ * Every explicit choice is remembered forever otherwise: a deleted group or a
+ * deleted workspace leaves its key behind, so the mirror grows with every edit
+ * the operator ever made. The map is returned untouched when nothing is stale,
+ * so the caller can skip a redundant write.
+ * @param state - the stored choices.
+ * @param liveKeys - keys the current tree can produce.
+ * @returns the pruned choices, or `state` itself when every key is live.
+ */
+export function pruneExpansion(state: ExpansionState, liveKeys: ReadonlySet<string>): ExpansionState {
+  const stale = Object.keys(state).filter(key => !liveKeys.has(key))
+  if (stale.length === 0) return state
+  const next: Record<string, boolean> = {}
+  for (const [key, value] of Object.entries(state)) if (liveKeys.has(key)) next[key] = value
+  return next
+}
+
+/**
  * Mirror the disclosure choices for the next reload.
  * @param next - the complete choice map.
  */
@@ -103,5 +128,30 @@ export function saveExpansion(next: ExpansionState): void {
     localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify(next))
   } catch {
     // Private mode: choices simply do not survive the reload.
+  }
+}
+
+/**
+ * Read the mirrored archived-row visibility choice.
+ * @returns the stored choice, or `'default'` (hide archived rows).
+ */
+export function loadArchivedFilter(): ArchivedFilter {
+  try {
+    const raw = localStorage.getItem(ARCHIVED_FILTER_STORAGE_KEY)
+    return raw === 'show' || raw === 'only' ? raw : 'default'
+  } catch {
+    return 'default'
+  }
+}
+
+/**
+ * Mirror the archived-row visibility choice for the next reload.
+ * @param next - the chosen filter.
+ */
+export function saveArchivedFilter(next: ArchivedFilter): void {
+  try {
+    localStorage.setItem(ARCHIVED_FILTER_STORAGE_KEY, next)
+  } catch {
+    // Private mode: the choice simply does not survive the reload.
   }
 }

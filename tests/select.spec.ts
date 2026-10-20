@@ -20,6 +20,7 @@ import {
   sessionShown,
   timeLabel,
   visibleSessionIds,
+  type ArchivedFilter,
   type SessionSelection,
 } from '../src/client/select.ts'
 
@@ -64,9 +65,10 @@ function selection(
   target: WorkspaceView,
   query = '',
   archived: readonly string[] = [],
+  archivedFilter: ArchivedFilter = 'default',
 ): SessionSelection {
   const archiveSet = new Set(archived.map(id))
-  return { list: sessions, workspace: target, main: mainSessionId(sessions), archived: archiveSet, query }
+  return { list: sessions, workspace: target, main: mainSessionId(sessions), archived: archiveSet, query, archivedFilter }
 }
 
 /** A status snapshot from per-session facts. */
@@ -101,6 +103,24 @@ describe('sessionShown', () => {
     expect(sessionShown(archivedRow, archivedRow.id, undefined, new Set([id('gone')]))).toBe(false)
     expect(sessionShown(undefined, id('missing'), undefined, new Set())).toBe(false)
   })
+
+  it('follows the archived filter instead of always hiding', () => {
+    const archivedRow = row('gone')
+    const archiveSet = new Set([id('gone')])
+    expect(sessionShown(archivedRow, archivedRow.id, undefined, archiveSet, 'show')).toBe(true)
+    expect(sessionShown(archivedRow, archivedRow.id, undefined, archiveSet, 'only')).toBe(true)
+    expect(sessionShown(row('live'), id('live'), undefined, archiveSet, 'only')).toBe(false)
+  })
+
+  it('keeps the visible placeholder unless the view asks for archived rows alone', () => {
+    // The shipped `sessionVisible` applies the archived filter last, so the
+    // placeholder shows under `default` and `show` and drops out of `only` —
+    // the archived-only view holds archived rows and nothing else.
+    const current = row('current', { blank: true, retainedBy: { mainView: 1 } as SessionSummary['retainedBy'] })
+    expect(sessionShown(current, current.id, current.id, new Set(), 'default')).toBe(true)
+    expect(sessionShown(current, current.id, current.id, new Set(), 'show')).toBe(true)
+    expect(sessionShown(current, current.id, current.id, new Set(), 'only')).toBe(false)
+  })
 })
 
 describe('visibleSessionIds', () => {
@@ -125,6 +145,49 @@ describe('visibleSessionIds', () => {
 
   it('separates rows that hold content from the placeholder', () => {
     expect(contentSessionIds(selection(sessions, target))).toEqual(['named'])
+  })
+})
+
+describe('archived-row visibility', () => {
+  const current = row('blank-current', { blank: true, retainedBy: { mainView: 1 } as SessionSummary['retainedBy'] })
+  const named = row('named')
+  const gone = row('gone')
+  const sessions = list([current, named, gone])
+  const target = workspace('repo', ['named', 'gone', 'blank-current'])
+
+  it('trails archived rows behind the live ones when the filter shows them', () => {
+    const shown = visibleSessionIds(selection(sessions, target, '', ['gone'], 'show'))
+    expect(shown).toEqual(['blank-current', 'named', 'gone'])
+  })
+
+  it('lists only archived rows under the archived-only filter', () => {
+    const only = visibleSessionIds(selection(sessions, target, '', ['gone'], 'only'))
+    expect(only).toEqual(['gone'])
+  })
+
+  it('keeps an archived row searchable while the filter shows it', () => {
+    expect(visibleSessionIds(selection(sessions, target, 'gon', ['gone'], 'show'))).toEqual(['gone'])
+    expect(visibleSessionIds(selection(sessions, target, 'gon', ['gone'], 'default'))).toEqual([])
+  })
+
+  it('never counts an archived row as content, even while it is displayed', () => {
+    expect(contentSessionIds(selection(sessions, target, '', ['gone'], 'show'))).toEqual(['named'])
+    expect(contentSessionIds(selection(sessions, target, '', ['gone'], 'only'))).toEqual([])
+  })
+
+  it('hides the placeholder from an archived-only view', () => {
+    expect(visibleSessionIds(selection(sessions, target, '', [], 'only'))).toEqual([])
+  })
+
+  it('trails an archived match behind a live one in search results', () => {
+    // Both match, and the archived row sits first in membership order: the
+    // live one still has to render first.
+    const older = row('older-archived', { displayTitle: 'weekly report' })
+    const newer = row('newer-live', { displayTitle: 'weekly report' })
+    const both = list([older, newer])
+    const ordered = workspace('repo', ['older-archived', 'newer-live'])
+    const matched = visibleSessionIds(selection(both, ordered, 'report', ['older-archived'], 'show'))
+    expect(matched).toEqual(['newer-live', 'older-archived'])
   })
 })
 

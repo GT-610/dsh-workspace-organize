@@ -64,6 +64,7 @@ function propsFor(
   sessions: readonly SessionSummary[],
   services: Services,
   statuses: SessionStatusSnapshot = new Map(),
+  archived: readonly string[] = [],
 ): OrganizeBrowserProps {
   const list = {
     ids: sessions.map(row => row.id),
@@ -72,7 +73,7 @@ function propsFor(
   } as unknown as SessionListState
   const workspaceSnapshot = {
     items: workspaces,
-    archivedSessionIds: [],
+    archivedSessionIds: archived.map(id),
     pinnedSessionIds: [],
     state: 'idle',
     phase: 'ready',
@@ -233,6 +234,168 @@ describe('GroupedBrowser menus', () => {
       const stored = JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
       expect(stored['ws:repo']).toBe(false)
       expect(stored['g:g1']).toBe(false)
+    })
+  })
+
+  it('drops disclosure choices for nodes that no longer exist', async () => {
+    // Keyed for a group and a workspace the catalog does not have: the mirror
+    // must not accumulate them forever.
+    localStorage.setItem('workspaceOrganize.expansion', JSON.stringify({
+      'g:g1': true,
+      'ws:repo': false,
+      'g:deleted': true,
+      'ws:gone-away': false,
+    }))
+    mountBrowser()
+    await screen.findByText('Work')
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
+      expect(Object.keys(stored).toSorted()).toEqual(['g:g1', 'ws:repo'])
+      expect(stored['g:g1']).toBe(true)
+      expect(stored['ws:repo']).toBe(false)
+    })
+  })
+})
+
+/**
+ * The catalog for the archived-row cases: one group holding one workspace with
+ * a live session, an archived one, and the retained placeholder.
+ *
+ * The placeholder matters: it keeps `repo` open, which is the shipped resting
+ * shape and what makes its session rows reachable at all.
+ * @returns the recorded operations the mount exposes.
+ */
+function mountWithArchive() {
+  const current = sessionRow('blank-current', {
+    blank: true,
+    retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+  })
+  const named = sessionRow('named')
+  const gone = sessionRow('gone')
+  const repo = workspaceView('repo', ['named', 'gone', 'blank-current'])
+  const services = fakeServices()
+  render(<GroupedBrowser {...propsFor([repo], [current, named, gone], services, new Map(), ['gone'])} />)
+  return services
+}
+
+/**
+ * Choose one row of the view options menu.
+ * @param label - the row's visible label.
+ */
+async function chooseViewOption(label: string): Promise<void> {
+  const viewButton = document.querySelector('.dwo-head-actions .dwo-icon-btn') as HTMLElement
+  await userEvent.click(viewButton)
+  const menu = await screen.findByRole('menu', { hidden: true })
+  await userEvent.click(within(menu).getByText(label))
+  await waitFor(() => { expect(screen.queryByRole('menu', { hidden: true })).toBeNull() })
+}
+
+describe('GroupedBrowser archived rows', () => {
+  it('hides an archived row by default', async () => {
+    mountWithArchive()
+    await screen.findByText('named')
+    expect(screen.queryByText('gone')).toBeNull()
+  })
+
+  it('shows an archived row beside the live ones and restores it', async () => {
+    const services = mountWithArchive()
+    await screen.findByText('named')
+    await chooseViewOption(messages.showArchived)
+    expect(await screen.findByText('gone')).toBeDefined()
+    // An archived row keeps its hover restore button instead of an archive one.
+    const row = document.querySelector('[data-row-key="session:gone"]') as Element
+    await userEvent.click(rowButtons(row)[0] as HTMLElement)
+    await waitFor(() => { expect(services.unarchiveSession).toHaveBeenCalledWith('gone') })
+    expect(services.archiveSession).not.toHaveBeenCalled()
+  })
+
+  it('does not open an archived row', async () => {
+    const services = mountWithArchive()
+    await screen.findByText('named')
+    await chooseViewOption(messages.showArchived)
+    await userEvent.click(await screen.findByText('gone'))
+    expect(services.openSession).not.toHaveBeenCalled()
+  })
+
+  it('lists nothing but archived rows under the archived-only filter', async () => {
+    mountWithArchive()
+    await screen.findByText('named')
+    await chooseViewOption(messages.onlyArchived)
+    expect(await screen.findByText('gone')).toBeDefined()
+    expect(screen.queryByText('named')).toBeNull()
+    expect(screen.queryByText(messages.blankSession)).toBeNull()
+  })
+
+  it('offers the way back when nothing is archived', async () => {
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const named = sessionRow('named')
+    const repo = workspaceView('repo', ['named', 'blank-current'])
+    render(<GroupedBrowser {...propsFor([repo], [current, named], fakeServices())} />)
+    await screen.findByText('named')
+    await chooseViewOption(messages.onlyArchived)
+    expect(await screen.findByText(messages.archivedOnlyEmpty)).toBeDefined()
+    await userEvent.click(screen.getByText(messages.viewOtherSessions))
+    expect(await screen.findByText('named')).toBeDefined()
+  })
+
+  it('says "no matches" when the archive holds rows the query misses', async () => {
+    mountWithArchive()
+    await screen.findByText('named')
+    await chooseViewOption(messages.onlyArchived)
+    expect(await screen.findByText('gone')).toBeDefined()
+    // `gone` is archived but does not match: the empty state must name the
+    // search, not claim the archive is empty.
+    await userEvent.click(document.querySelector('.dwo-search-btn') as HTMLElement)
+    await userEvent.type(await screen.findByPlaceholderText(messages.search), 'zzz')
+    expect(await screen.findByText(messages.noMatches)).toBeDefined()
+    expect(screen.queryByText(messages.archivedOnlyEmpty)).toBeNull()
+    expect(screen.queryByText(messages.viewOtherSessions)).toBeNull()
+  })
+
+  it('remembers the filter across a reload', async () => {
+    mountWithArchive()
+    await screen.findByText('named')
+    await chooseViewOption(messages.onlyArchived)
+    expect(localStorage.getItem('workspaceOrganize.archivedFilter')).toBe('only')
+  })
+
+  it('archives a group counting only live, non-blank sessions', async () => {
+    const services = mountWithArchive()
+    await screen.findByText('repo')
+    const groupRow = document.querySelector('[data-row-key="group:g1"]') as Element
+    await userEvent.click(rowButtons(groupRow)[0] as HTMLElement)
+    const menu = await screen.findByRole('menu', { hidden: true })
+    await userEvent.click(within(menu).getByText(messages.archiveGroup))
+    const dialog = await screen.findByRole('dialog', { hidden: true })
+    // One live session: `gone` is already archived and the placeholder has no
+    // content, so neither is promised nor touched.
+    expect(within(dialog).getByText(messages.archiveGroupBody(1))).toBeDefined()
+    await userEvent.click(within(dialog).getByText(messages.ok))
+    await waitFor(() => { expect(services.archiveSession).toHaveBeenCalledWith('named') })
+    expect(services.archiveSession).not.toHaveBeenCalledWith('gone')
+    expect(services.archiveSession).not.toHaveBeenCalledWith('blank-current')
+  })
+
+  it('retries a refused archive once with the stop-then-archive path', async () => {
+    const services = fakeServices()
+    services.archiveSession = vi.fn()
+      .mockRejectedValueOnce(new Error('session-active'))
+      .mockResolvedValue(undefined)
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const named = sessionRow('named')
+    render(<GroupedBrowser {...propsFor([workspaceView('repo', ['named', 'blank-current'])], [current, named], services)} />)
+    await screen.findByText('named')
+    const row = document.querySelector('[data-row-key="session:named"]') as Element
+    await userEvent.click(rowButtons(row)[0] as HTMLElement)
+    await waitFor(() => {
+      expect(services.archiveSession).toHaveBeenNthCalledWith(1, 'named')
+      expect(services.archiveSession).toHaveBeenNthCalledWith(2, 'named', { stopActivity: true })
     })
   })
 })

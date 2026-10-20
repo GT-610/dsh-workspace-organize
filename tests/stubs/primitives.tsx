@@ -27,6 +27,22 @@ export interface MenuItem {
   submenu?: readonly MenuItem[]
 }
 
+/** Hairline between item groups (not selectable). */
+export interface MenuSeparator {
+  type: 'separator'
+  id: string
+}
+
+/** Non-interactive heading row above a group of items. */
+export interface MenuLabel {
+  type: 'label'
+  id: string
+  text: string
+}
+
+/** One primary-menu entry: a row, a separator, or a heading label. */
+export type MenuEntry = MenuItem | MenuSeparator | MenuLabel
+
 /** Build one icon double that records which glyph was requested. */
 function icon(name: string) {
   return function Icon({ size }: IconProps) {
@@ -81,10 +97,11 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
  * Submenu rows render their children inline so a test can reach a nested entry
  * without simulating hover.
  */
-export function Menu({ open, anchor, items = [], onSelect, onClose }: {
+export function Menu({ open, anchor, items = [], selectedId, onSelect, onClose }: {
   open: boolean
   anchor: ReactNode
-  items?: readonly MenuItem[]
+  items?: readonly MenuEntry[]
+  selectedId?: string | undefined
   onSelect?: (id: string) => void
   onClose: () => void
   [key: string]: unknown
@@ -94,19 +111,28 @@ export function Menu({ open, anchor, items = [], onSelect, onClose }: {
     <>
       {anchor}
       <div role="menu">
-        {items.map(item => (
-          <div key={item.id}>
-            <button type="button" role="menuitem" onClick={() => onSelect?.(item.id)}>
-              {item.icon}
-              {item.label}
-            </button>
-            {item.submenu?.map(child => (
-              <button key={child.id} type="button" role="menuitem" onClick={() => onSelect?.(child.id)}>
-                {child.label}
-              </button>
-            ))}
-          </div>
-        ))}
+        {items.map(item => ('type' in item
+          ? (item.type === 'separator'
+              ? <hr key={item.id} data-menu-separator />
+              : <div key={item.id} data-menu-label>{item.text}</div>)
+          : (
+              <div key={item.id}>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-current={selectedId === item.id ? 'true' : undefined}
+                  onClick={() => onSelect?.(item.id)}
+                >
+                  {item.icon}
+                  {item.label}
+                </button>
+                {item.submenu?.map(child => (
+                  <button key={child.id} type="button" role="menuitem" onClick={() => onSelect?.(child.id)}>
+                    {child.label}
+                  </button>
+                ))}
+              </div>
+            )))}
         <button type="button" data-menu-close onClick={onClose}>close</button>
       </div>
     </>

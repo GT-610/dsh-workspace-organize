@@ -9,7 +9,8 @@ Group the DSH sidebar's workspaces into named groups and browse them as group �
 - **Three-level browsing.** Group → workspace → session. Row heights, type scale, artwork and collapse behavior follow the shipped sidebar: the same `--dsw-*` design tokens and the same shipped components (`Menu`, `Modal`, `Tooltip`, `Icon*`, `StateDot`), so theming and the shared menu blur/transparency keep tracking the shell instead of being maintained here.
 - **Groups are a separate virtual layer.** The group document lives on the plugin's own Host route under `$DSH_HOME/storages/` and never touches the official workspace registry. Nothing about a workspace or session changes unless you ask for it.
 - **Blank sessions follow the shipped rule.** Every "new session" click leaves a provisional blank session behind. The shipped sidebar renders only the one the main view currently holds, labeled "New Session"; this plugin applies the same rule, so spent drafts no longer pile up as rows named after each workspace.
-- **Group-level bulk operations.** One group menu entry archives every session in the group, another deletes every workspace in it — both behind a confirmation that names the affected count.
+- **Archive a session, and get it back.** Archiving moves the row out of the list exactly as the shipped browser does; the view menu carries the same three choices — hide archived, show all (including archived), archived only — and the chosen one is remembered. While archived rows are on screen their trailing button becomes "Restore from archive", and the row itself does not open, because an archived session cannot be viewed.
+- **Group-level bulk operations.** One group menu entry archives every session in the group, another deletes every workspace in it — both behind a confirmation that names the affected count. The count is the number the operation acts on: archived sessions and the blank placeholder are excluded, so it cannot promise three rows and archive ten.
 - **Right-click composes instead of competing.** Menus are claimed on `contextmenu`: if another right-click plugin has already claimed the row, the event is stopped during capture, no second menu appears, and the gesture is never opened on mousedown to step around that arbitration.
 - **Disclosure choices persist.** Explicit expand/collapse choices are stored in localStorage, so a reload renders the same tree.
 
@@ -82,15 +83,19 @@ After that, `pnpm dev` (`tsdown --watch`) plus a page reload is the whole loop.
 | Move a workspace into a group | Workspace row ⋯ → Move to group → pick one |
 | Move a workspace out of its group | Workspace row ⋯ → Move out of group |
 | Start a session in a workspace | Workspace row ⋯ or the trailing ＋ |
+| Archive / restore one session | Trailing archive button on the session row, or its context menu |
+| See archived sessions | Header slider button → All sessions (show archived) / Only archived sessions |
 | Expand / collapse everything | Header slider button → Expand all / Collapse all |
-| Search sessions | Header magnifier |
+| Search sessions by title | Header magnifier |
 
 ## Data and privacy
 
 - The group document exists in exactly two places: `$DSH_HOME/storages/workspace-organize-groups.json` on the Host, and a localStorage mirror used when the Host is unreachable (the Host copy stays authoritative).
+- The archive and pin sets are not the plugin's: archiving and restoring go through the official operations, so they change the same state the shipped browser reads.
 - Writes are atomic — temporary file plus `rename`, behind a serialized write chain so concurrent requests cannot overwrite each other.
-- Reads are open (the server itself listens on loopback only). Writes accept same-origin browser requests only: `Sec-Fetch-Site` first, then an `Origin`/`Host` comparison, and a request carrying neither is refused.
-- The document is bounded and validated by one shared validator on both sides: at most 200 groups, 500 workspaces per group, 1 MiB request body. An invalid document is rejected whole rather than partially applied, and unknown fields are dropped so a document written by a later version still loads.
+- Reads are open (the server itself listens on loopback only). Writes accept same-origin browser requests only: `Sec-Fetch-Site` first, then an `Origin`/`Host` comparison, and a request carrying neither is refused. Reads answer `cache-control: no-store` and the client asks with `cache: 'no-store'`, so a reload always shows the current groups.
+- The document's **structure** is capped by one validator shared by both sides: at most 200 groups, 500 workspaces per group, 2 000 members in the whole document. An invalid document is rejected whole rather than partially applied, unknown fields are dropped so a document written by a later version still loads, and each workspace is placed at most once — a repeated member is dropped rather than failing the whole document.
+- The **request body** is capped separately and independently of that validation, by the Host route, before it parses anything: a body over 2 MiB is refused outright, and the request never reaches the validator. Because the gate measures the bytes on the wire, everything the validator would discard still counts — unknown fields and repeated members included — so a request can be rejected while the document it normalizes to would have passed. The gate counts bytes rather than characters, and one control character in an id becomes six bytes as `\uXXXX`, so the cap is sized above the worst encoding the structural limits allow; what it rules out is content the structural limits say nothing about.
 
 ## Development
 

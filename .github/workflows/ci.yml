@@ -40,3 +40,10 @@ jobs:
 
       - name: Committed artifacts are current
         run: git diff --exit-code -- dist
+
+      # A client bundle may only request the shell's baseline modules; a request
+      # outside it fails at runtime, where the sidebar silently falls back to the
+      # shipped browser. Nothing above reads the emitted artifact, so this is the
+      # only step that can catch it.
+      - name: Client bundle stays on the baseline
+        run: pnpm run check:bundle

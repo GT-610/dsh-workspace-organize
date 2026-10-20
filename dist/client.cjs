@@ -51,6 +51,11 @@ function isBoundedId(value, limit) {
 *
 * Unknown extra fields are dropped, so a document written by a later version
 * still loads; a malformed one is rejected whole rather than partially applied.
+*
+* One normalization is worth naming: a Workspace may appear at most once in the
+* document, because a Workspace lives in one group. A repeated member is dropped
+* rather than rejected whole — the same treatment an unknown field gets — so a
+* hand-edited file with a stray duplicate still opens.
 * @param raw - parsed JSON body or file content.
 * @returns the normalized document, or `null` when the shape is invalid.
 */
@@ -58,20 +63,30 @@ function normalizeGroupDocument(raw) {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
 	const groups = raw.groups;
 	if (!Array.isArray(groups) || groups.length > 200) return null;
-	const seen = /* @__PURE__ */ new Set();
+	const seenIds = /* @__PURE__ */ new Set();
+	const placed = /* @__PURE__ */ new Set();
 	const out = [];
+	let total = 0;
 	for (const group of groups) {
 		if (group === null || typeof group !== "object" || Array.isArray(group)) return null;
 		const { id, name, workspaceIds } = group;
 		if (!isBoundedId(id, 128) || typeof name !== "string" || name.length > 200) return null;
-		if (seen.has(id)) return null;
-		seen.add(id);
+		if (seenIds.has(id)) return null;
+		seenIds.add(id);
 		if (!Array.isArray(workspaceIds) || workspaceIds.length > 500) return null;
-		if (!workspaceIds.every((member) => isBoundedId(member, 128))) return null;
+		const members = [];
+		for (const member of workspaceIds) {
+			if (!isBoundedId(member, 128)) return null;
+			if (placed.has(member)) continue;
+			placed.add(member);
+			members.push(member);
+		}
+		total += members.length;
+		if (total > 2e3) return null;
 		out.push({
 			id,
 			name,
-			workspaceIds: [...workspaceIds]
+			workspaceIds: members
 		});
 	}
 	return {
@@ -93,6 +108,8 @@ function normalizeGroupDocument(raw) {
 const GROUPS_STORAGE_KEY = "workspaceOrganize.groups";
 /** Mirror key for the explicit disclosure choices. */
 const EXPANSION_STORAGE_KEY = "workspaceOrganize.expansion";
+/** Mirror key for the archived-row visibility choice. */
+const ARCHIVED_FILTER_STORAGE_KEY = "workspaceOrganize.archivedFilter";
 /** A fresh group id. Opaque and unique enough for one document. */
 function newGroupId() {
 	return `g-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
@@ -114,7 +131,7 @@ function mirroredDocument() {
 async function loadGroupDocument() {
 	const fallback = mirroredDocument();
 	try {
-		const response = await fetch(GROUP_ROUTE);
+		const response = await fetch(GROUP_ROUTE, { cache: "no-store" });
 		if (response.ok) {
 			const doc = normalizeGroupDocument(await response.json());
 			if (doc !== null) return doc;
@@ -156,12 +173,50 @@ function loadExpansion() {
 	}
 }
 /**
+* Keep only the disclosure choices whose node still exists.
+*
+* Every explicit choice is remembered forever otherwise: a deleted group or a
+* deleted workspace leaves its key behind, so the mirror grows with every edit
+* the operator ever made. The map is returned untouched when nothing is stale,
+* so the caller can skip a redundant write.
+* @param state - the stored choices.
+* @param liveKeys - keys the current tree can produce.
+* @returns the pruned choices, or `state` itself when every key is live.
+*/
+function pruneExpansion(state, liveKeys) {
+	if (Object.keys(state).filter((key) => !liveKeys.has(key)).length === 0) return state;
+	const next = {};
+	for (const [key, value] of Object.entries(state)) if (liveKeys.has(key)) next[key] = value;
+	return next;
+}
+/**
 * Mirror the disclosure choices for the next reload.
 * @param next - the complete choice map.
 */
 function saveExpansion(next) {
 	try {
 		localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify(next));
+	} catch {}
+}
+/**
+* Read the mirrored archived-row visibility choice.
+* @returns the stored choice, or `'default'` (hide archived rows).
+*/
+function loadArchivedFilter() {
+	try {
+		const raw = localStorage.getItem(ARCHIVED_FILTER_STORAGE_KEY);
+		return raw === "show" || raw === "only" ? raw : "default";
+	} catch {
+		return "default";
+	}
+}
+/**
+* Mirror the archived-row visibility choice for the next reload.
+* @param next - the chosen filter.
+*/
+function saveArchivedFilter(next) {
+	try {
+		localStorage.setItem(ARCHIVED_FILTER_STORAGE_KEY, next);
 	} catch {}
 }
 //#endregion
@@ -182,6 +237,12 @@ const EN = {
 	noSessions: "No sessions",
 	noMatches: "No matches",
 	emptyGroup: "Move workspaces here from their ⋯ menu",
+	hideArchived: "Hide archived sessions",
+	showArchived: "All sessions (show archived)",
+	onlyArchived: "Only archived sessions",
+	archivedOnlyEmpty: "No archived sessions yet",
+	viewOtherSessions: "View other sessions",
+	archivedNotOpenable: "Archived sessions cannot be opened. Restore it to view.",
 	newSession: "New session in this workspace",
 	blankSession: "New Session",
 	workspaceMenu: "Workspace menu",
@@ -236,6 +297,12 @@ const ZH = {
 	noSessions: "暂无会话",
 	noMatches: "无匹配",
 	emptyGroup: "从工作区的 ⋯ 菜单移入工作区",
+	hideArchived: "隐藏已归档会话",
+	showArchived: "全部会话(含已归档)",
+	onlyArchived: "只看已归档会话",
+	archivedOnlyEmpty: "暂无已归档会话",
+	viewOtherSessions: "查看其他会话",
+	archivedNotOpenable: "已归档会话暂时无法查看，请从归档恢复后再查看。",
 	newSession: "在此工作区新建会话",
 	blankSession: "新会话",
 	workspaceMenu: "工作区菜单",
@@ -310,15 +377,24 @@ function mainSessionId(list) {
 * Every other blank stays out of the list — those are the drafts left behind by
 * earlier "new session" clicks, and rendering them put a row named after each
 * workspace's directory in the tree.
+*
+* Archived rows follow the filter, exactly as they do in the shipped browser:
+* hidden by default, shown beside the rest, or shown alone.
 * @param row - the session's list row, when the catalog has it.
 * @param id - the session id being tested.
 * @param main - the retained session id.
 * @param archived - registry-global archive set.
+* @param archivedFilter - archived-row visibility choice.
 * @returns whether the session belongs in the tree.
 */
-function sessionShown(row, id, main, archived) {
-	if (row === void 0 || archived.has(id)) return false;
-	return !row.blank || id === main;
+function sessionShown(row, id, main, archived, archivedFilter = "default") {
+	if (row === void 0) return false;
+	if (row.blank && id !== main) return false;
+	switch (archivedFilter) {
+		case "default": return !archived.has(id);
+		case "show": return true;
+		case "only": return archived.has(id);
+	}
 }
 /**
 * The sessions one Workspace shows, in render order.
@@ -327,30 +403,49 @@ function sessionShown(row, id, main, archived) {
 * directory name, so matching it would tie search to one language. The
 * surviving placeholder leads its Workspace, matching the order
 * `sectionMembers` gives placeholders in the shipped tree.
+*
+* Two partitions apply to whatever the filter and query leave: the placeholder
+* leads, and archived rows trail the live ones — where the shipped manual order
+* keeps them. Both hold for search results as well, so a match from the archive
+* never outranks a live one.
 * @param selection - the snapshots and query to read.
-* @returns visible session ids, placeholder first.
+* @returns visible session ids, placeholder first, archived last.
 */
 function visibleSessionIds(selection) {
-	const { list, workspace, main, archived, query } = selection;
-	const ids = workspace.sessionIds.filter((id) => sessionShown(list.byId[id], id, main, archived));
-	if (query !== "") return ids.filter((id) => {
+	const { list, workspace, main, archived, query, archivedFilter = "default" } = selection;
+	const shown = workspace.sessionIds.filter((id) => sessionShown(list.byId[id], id, main, archived, archivedFilter));
+	const matched = query === "" ? shown : shown.filter((id) => {
 		const row = list.byId[id];
 		if (row === void 0 || row.blank) return false;
 		return row.displayTitle.toLowerCase().includes(query);
 	});
-	if (main === void 0 || !ids.includes(main)) return [...ids];
-	return [main, ...ids.filter((id) => id !== main)];
+	const leading = [];
+	const live = [];
+	const spent = [];
+	for (const id of matched) if (id === main) leading.push(id);
+	else if (archived.has(id)) spent.push(id);
+	else live.push(id);
+	return [
+		...leading,
+		...live,
+		...spent
+	];
 }
 /**
 * Visible rows that actually hold something.
 *
-* The blank placeholder is excluded, so counts and bulk operations agree on
-* what a "session in this group" is.
+* The blank placeholder is excluded, and so is an archived row even while the
+* archive filter shows it: group counts and the group-archive confirmation must
+* agree on what "a session in this group" is, and an archived one is already
+* out of the way.
 * @param selection - the snapshots and query to read.
-* @returns visible non-blank session ids.
+* @returns visible non-blank, non-archived session ids.
 */
 function contentSessionIds(selection) {
-	return visibleSessionIds(selection).filter((id) => selection.list.byId[id]?.blank !== true);
+	return visibleSessionIds(selection).filter((id) => {
+		const row = selection.list.byId[id];
+		return row !== void 0 && !row.blank && !selection.archived.has(id);
+	});
 }
 /** Copy key for each pending-interaction kind the shipped rows label. */
 const PENDING_COPY = {
@@ -528,6 +623,8 @@ const STYLES = `
 .dwo-count { display:inline-flex; align-items:center; gap:4px; }
 .dwo-session-row.archived .dwo-row-title { color:var(--dsw-alias-label-caption); }
 .dwo-empty { padding:16px 12px; font-size:13px; line-height:20px; color:var(--dsw-alias-label-tertiary); }
+.dwo-empty-link { border:none; background:transparent; padding:0; cursor:pointer; font:inherit; color:var(--dsw-alias-link); }
+.dwo-empty-link:hover { text-decoration:underline; }
 .dwo-ws-sessions { display:flex; flex-direction:column; }
 .dwo-ws-sessions > * + * { margin-top:2px; }
 
@@ -574,6 +671,7 @@ function GroupedBrowser(props) {
 	const [query, setQuery] = (0, react.useState)("");
 	const [searchOpen, setSearchOpen] = (0, react.useState)(false);
 	const [expansion, setExpansion] = (0, react.useState)(loadExpansion);
+	const [archivedFilter, setArchivedFilter] = (0, react.useState)(loadArchivedFilter);
 	const [menu, setMenu] = (0, react.useState)(void 0);
 	const [dialog, setDialog] = (0, react.useState)(void 0);
 	const [busy, setBusy] = (0, react.useState)(false);
@@ -617,10 +715,21 @@ function GroupedBrowser(props) {
 			});
 			return changed ? next : current;
 		});
-	}, [workspaceReady, workspaces]);
-	const groupedIds = (0, react.useMemo)(() => new Set((groups ?? []).flatMap((group) => group.workspaceIds)), [groups]);
-	const ungrouped = (0, react.useMemo)(() => workspaces.filter((workspace) => !groupedIds.has(workspace.workspaceId)), [workspaces, groupedIds]);
+	}, [
+		workspaceReady,
+		workspaces,
+		groups
+	]);
 	const normalizedQuery = query.trim().toLowerCase();
+	const currentGroups = (0, react.useMemo)(() => groups ?? [], [groups]);
+	const groupedIds = (0, react.useMemo)(() => new Set(currentGroups.flatMap((group) => group.workspaceIds)), [currentGroups]);
+	const ungrouped = (0, react.useMemo)(() => workspaces.filter((workspace) => !groupedIds.has(workspace.workspaceId)), [workspaces, groupedIds]);
+	const workspaceById = (0, react.useMemo)(() => new Map(workspaces.map((workspace) => [workspace.workspaceId, workspace])), [workspaces]);
+	const destinationsByWorkspace = (0, react.useMemo)(() => {
+		const out = /* @__PURE__ */ new Map();
+		for (const workspace of workspaces) out.set(workspace.workspaceId, currentGroups.filter((group) => !group.workspaceIds.includes(workspace.workspaceId)));
+		return out;
+	}, [currentGroups, workspaces]);
 	const main = (0, react.useMemo)(() => mainSessionId(list), [list]);
 	const currentSessionId = panelActive ? void 0 : main;
 	const activeWorkspaceId = (0, react.useMemo)(() => {
@@ -631,6 +740,24 @@ function GroupedBrowser(props) {
 		setExpansion(next);
 		saveExpansion(next);
 	}, []);
+	(0, react.useEffect)(() => {
+		if (!workspaceReady || groups === void 0) return;
+		const live = /* @__PURE__ */ new Set();
+		for (const group of groups) live.add(`g:${group.id}`);
+		for (const workspace of workspaces) live.add(`ws:${workspace.workspaceId}`);
+		const next = pruneExpansion(expansion, live);
+		if (next !== expansion) persistExpansion(next);
+	}, [
+		workspaceReady,
+		groups,
+		workspaces,
+		expansion,
+		persistExpansion
+	]);
+	const chooseArchivedFilter = (0, react.useCallback)((next) => {
+		setArchivedFilter(next);
+		saveArchivedFilter(next);
+	}, []);
 	const setExpanded = (key, value) => {
 		persistExpansion({
 			...expansion,
@@ -639,26 +766,76 @@ function GroupedBrowser(props) {
 	};
 	/**
 	* Whether a node renders its children. A search forces everything open so
-	* matches are reachable; otherwise an explicit choice wins and the fallback
-	* covers the untouched default.
+	* matches are reachable, and so does the archived-only filter, for the same
+	* reason; otherwise an explicit choice wins and the fallback covers the
+	* untouched default.
 	*/
 	const isExpanded = (key, fallback) => {
-		if (normalizedQuery !== "") return true;
+		if (normalizedQuery !== "" || archivedFilter === "only") return true;
 		const explicit = expansion[key];
 		return explicit === void 0 ? fallback : explicit;
 	};
 	/** The visible-session derivation input for one Workspace. */
-	const selectFor = (workspace) => ({
+	const selectFor = (0, react.useCallback)((workspace) => ({
 		list,
 		workspace,
 		main,
 		archived,
-		query: normalizedQuery
-	});
+		query: normalizedQuery,
+		archivedFilter
+	}), [
+		list,
+		main,
+		archived,
+		normalizedQuery,
+		archivedFilter
+	]);
+	const visibleByWorkspace = (0, react.useMemo)(() => {
+		const out = /* @__PURE__ */ new Map();
+		for (const workspace of workspaces) out.set(workspace.workspaceId, visibleSessionIds(selectFor(workspace)));
+		return out;
+	}, [workspaces, selectFor]);
+	/**
+	* The sessions a group-level operation may act on, per Workspace.
+	*
+	* Deliberately independent of the current search and archive filter: the
+	* confirmation counts exactly what the operation will touch, so archiving a
+	* group while a search is typed cannot promise three rows and archive ten.
+	*/
+	const contentByWorkspace = (0, react.useMemo)(() => {
+		const out = /* @__PURE__ */ new Map();
+		for (const workspace of workspaces) out.set(workspace.workspaceId, contentSessionIds({
+			list,
+			workspace,
+			main,
+			archived,
+			query: "",
+			archivedFilter: "default"
+		}));
+		return out;
+	}, [
+		workspaces,
+		list,
+		main,
+		archived
+	]);
+	/** The visible rows of one Workspace, already derived for this render. */
+	const visibleOf = (workspaceId) => visibleByWorkspace.get(workspaceId) ?? [];
+	/** The sessions a group-level operation may act on, already derived. */
+	const contentOf = (workspaceId) => contentByWorkspace.get(workspaceId) ?? [];
+	const hasVisibleContent = archivedFilter !== "only" || workspaces.some((workspace) => visibleOf(workspace.workspaceId).length > 0);
+	const hasArchived = workspaces.some((workspace) => workspace.sessionIds.some((sessionId) => sessionShown(list.byId[sessionId], sessionId, main, archived, "only")));
+	/**
+	* Archive one Session, retrying once through the stop-then-archive path.
+	*
+	* The Host refuses to archive a Session with running work, and that refusal is
+	* the only failure worth a second attempt: the retry asks it to stop the work
+	* first. Every other failure is reported and left alone.
+	* @param sessionId - the Session to archive.
+	*/
+	const archiveWithFallback = (sessionId) => services.archiveSession(sessionId).catch(() => services.archiveSession(sessionId, { stopActivity: true }));
 	const archiveOne = (sessionId) => {
-		services.archiveSession(sessionId).catch(() => {
-			services.archiveSession(sessionId, { stopActivity: true }).catch((error) => console.warn("workspace-organize: archive refused", sessionId, error));
-		});
+		archiveWithFallback(sessionId).catch((error) => console.warn("workspace-organize: archive refused", sessionId, error));
 	};
 	/**
 	* Open a row menu at a viewport point.
@@ -675,7 +852,8 @@ function GroupedBrowser(props) {
 			rowKey,
 			at,
 			items: spec.items,
-			actions: spec.actions
+			actions: spec.actions,
+			selectedId: spec.selectedId
 		});
 	};
 	/** Right-click wiring for one row. */
@@ -733,6 +911,7 @@ function GroupedBrowser(props) {
 			"data-row-key": `session:${sessionId}`,
 			"aria-level": 3,
 			"aria-selected": currentSessionId === sessionId,
+			"aria-description": isArchived ? messages.archivedNotOpenable : void 0,
 			style: indent(depth),
 			"data-session-id": sessionId,
 			onClick: () => {
@@ -781,10 +960,10 @@ function GroupedBrowser(props) {
 		}, key);
 	};
 	const workspaceRow = (workspace, depth) => {
-		const ids = visibleSessionIds(selectFor(workspace));
+		const ids = visibleOf(workspace.workspaceId);
 		const key = `ws:${workspace.workspaceId}`;
 		const isOpen = isExpanded(key, workspace.workspaceId === activeWorkspaceId);
-		const others = (groups ?? []).filter((group) => !group.workspaceIds.includes(workspace.workspaceId));
+		const others = destinationsByWorkspace.get(workspace.workspaceId) ?? [];
 		const spec = () => {
 			const items = [{
 				id: "rename",
@@ -821,7 +1000,7 @@ function GroupedBrowser(props) {
 					current: workspace.title
 				}),
 				newSession: () => services.startSession(workspace.workspaceId),
-				remove: () => persist((groups ?? []).map((group) => ({
+				remove: () => persist(currentGroups.map((group) => ({
 					...group,
 					workspaceIds: group.workspaceIds.filter((id) => id !== workspace.workspaceId)
 				}))),
@@ -831,7 +1010,7 @@ function GroupedBrowser(props) {
 					title: workspace.title
 				})
 			};
-			for (const target of others) actions[`move:${target.id}`] = () => persist((groups ?? []).map((group) => ({
+			for (const target of others) actions[`move:${target.id}`] = () => persist(currentGroups.map((group) => ({
 				...group,
 				workspaceIds: [...group.workspaceIds.filter((id) => id !== workspace.workspaceId), ...group.id === target.id ? [workspace.workspaceId] : []]
 			})));
@@ -918,8 +1097,8 @@ function GroupedBrowser(props) {
 	const groupNode = (group, depth) => {
 		const key = `g:${group.id}`;
 		const isOpen = isExpanded(key, true);
-		const members = group.workspaceIds.map((id) => workspaces.find((workspace) => workspace.workspaceId === id)).filter((member) => member !== void 0);
-		const sessionCount = members.reduce((total, member) => total + contentSessionIds(selectFor(member)).length, 0);
+		const members = group.workspaceIds.map((id) => workspaceById.get(id)).filter((member) => member !== void 0);
+		const sessionCount = members.flatMap((member) => contentOf(member.workspaceId)).length;
 		const { running, pending } = groupRollUp(members, statuses, archived);
 		const state = pending > 0 ? "warning" : running > 0 ? "ongoing" : void 0;
 		const summary = [`${members.length} ${messages.unitWorkspaces}`];
@@ -978,7 +1157,7 @@ function GroupedBrowser(props) {
 					name: group.name,
 					count: members.length
 				}),
-				ungroup: () => persist((groups ?? []).filter((current) => current.id !== group.id))
+				ungroup: () => persist(currentGroups.filter((current) => current.id !== group.id))
 			}
 		});
 		return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -1043,30 +1222,23 @@ function GroupedBrowser(props) {
 		}, group.id);
 	};
 	const confirmArchiveGroup = async (groupId) => {
-		const group = (groups ?? []).find((candidate) => candidate.id === groupId);
+		const group = groups?.find((candidate) => candidate.id === groupId);
 		if (group === void 0) return;
 		setBusy(true);
 		try {
-			for (const workspaceId of group.workspaceIds) {
-				const workspace = workspaces.find((candidate) => candidate.workspaceId === workspaceId);
-				if (workspace === void 0) continue;
-				for (const sessionId of workspace.sessionIds) {
-					if (archived.has(sessionId) || list.byId[sessionId]?.blank === true) continue;
-					await services.archiveSession(sessionId).catch(() => services.archiveSession(sessionId, { stopActivity: true })).catch((error) => console.warn("workspace-organize: archive refused", sessionId, error));
-				}
-			}
+			for (const workspaceId of group.workspaceIds) for (const sessionId of contentOf(workspaceId)) await archiveWithFallback(sessionId).catch((error) => console.warn("workspace-organize: archive refused", sessionId, error));
 		} finally {
 			setBusy(false);
 			setDialog(void 0);
 		}
 	};
 	const confirmDeleteGroupWorkspaces = async (groupId) => {
-		const group = (groups ?? []).find((candidate) => candidate.id === groupId);
+		const group = currentGroups.find((candidate) => candidate.id === groupId);
 		if (group === void 0) return;
 		setBusy(true);
 		try {
 			for (const workspaceId of group.workspaceIds) await services.deleteWorkspace(asWorkspaceId(workspaceId)).catch((error) => console.warn("workspace-organize: delete failed", workspaceId, error));
-			persist((groups ?? []).filter((candidate) => candidate.id !== groupId));
+			persist(currentGroups.filter((candidate) => candidate.id !== groupId));
 		} finally {
 			setBusy(false);
 			setDialog(void 0);
@@ -1101,13 +1273,33 @@ function GroupedBrowser(props) {
 				id: "collapseAll",
 				label: messages.collapseAll,
 				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconChevronsUpDownOutlineRegular, {})
+			},
+			{
+				type: "separator",
+				id: "archived-separator"
+			},
+			{
+				id: "hideArchived",
+				label: messages.hideArchived
+			},
+			{
+				id: "showArchived",
+				label: messages.showArchived
+			},
+			{
+				id: "onlyArchived",
+				label: messages.onlyArchived
 			}
 		],
 		actions: {
 			newGroup: () => setDialog({ kind: "createGroup" }),
 			expandAll: () => setAllExpanded(true),
-			collapseAll: () => setAllExpanded(false)
-		}
+			collapseAll: () => setAllExpanded(false),
+			hideArchived: () => chooseArchivedFilter("default"),
+			showArchived: () => chooseArchivedFilter("show"),
+			onlyArchived: () => chooseArchivedFilter("only")
+		},
+		selectedId: archivedFilter === "default" ? "hideArchived" : archivedFilter === "show" ? "showArchived" : "onlyArchived"
 	};
 	const pendingLoad = groups === void 0 || !workspaceReady;
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -1199,16 +1391,31 @@ function GroupedBrowser(props) {
 			pendingLoad ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 				className: "dwo-empty",
 				children: messages.loading
+			}) : archivedFilter === "only" && !hasVisibleContent ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: "dwo-list",
+				role: "tree",
+				"aria-label": messages.organizeTitle,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dwo-empty",
+					children: [hasArchived ? messages.noMatches : messages.archivedOnlyEmpty, !hasArchived && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [" ", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						className: "dwo-empty-link",
+						onClick: () => chooseArchivedFilter("default"),
+						children: messages.viewOtherSessions
+					})] })]
+				})
 			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "dwo-list",
+				role: "tree",
+				"aria-label": messages.organizeTitle,
 				children: [
-					(groups ?? []).map((group) => groupNode(group, 0)),
-					(groups ?? []).length > 0 && ungrouped.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					currentGroups.map((group) => groupNode(group, 0)),
+					currentGroups.length > 0 && ungrouped.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: "dwo-sep",
 						children: messages.ungrouped
 					}),
 					ungrouped.map((workspace) => workspaceRow(workspace, 0)),
-					(groups ?? []).length === 0 && ungrouped.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					currentGroups.length === 0 && ungrouped.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: "dwo-empty",
 						children: messages.noWorkspaces
 					})
@@ -1217,16 +1424,14 @@ function GroupedBrowser(props) {
 			menu !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {
 				open: true,
 				portal: true,
-				anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-					className: "dwo-anchor",
-					style: {
-						position: "fixed",
-						left: menu.at.x,
-						top: menu.at.y
-					}
-				}),
+				anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { style: {
+					position: "fixed",
+					left: menu.at.x,
+					top: menu.at.y
+				} }),
 				getAnchorRect: () => new DOMRect(menu.at.x, menu.at.y, 0, 0),
 				items: menu.items,
+				selectedId: menu.selectedId,
 				onSelect: (id) => {
 					setMenu(void 0);
 					menu.actions[id]?.();
@@ -1264,12 +1469,12 @@ function GroupedBrowser(props) {
 			case "renameGroup": {
 				const trimmed = name.trim();
 				if (trimmed !== "") {
-					if (current.kind === "createGroup") persist([...groups ?? [], {
+					if (current.kind === "createGroup") persist([...currentGroups, {
 						id: newGroupId(),
 						name: trimmed,
 						workspaceIds: []
 					}]);
-					else persist((groups ?? []).map((group) => group.id === current.groupId ? {
+					else persist(currentGroups.map((group) => group.id === current.groupId ? {
 						...group,
 						name: trimmed
 					} : group));
