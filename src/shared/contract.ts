@@ -17,11 +17,17 @@ export const GROUP_ROUTE = '/api/workspace-organize'
 export const GROUP_STORAGE_FILE = 'workspace-organize-groups.json'
 
 /**
- * Request body cap. The structural caps below are chosen so that even a
- * document at their limit fits here: 2000 members of at most 128 characters
- * plus 200 group records is a few hundred kilobytes, never a megabyte.
+ * Request body cap, in bytes.
+ *
+ * It has to accept every document the validator below can produce, or a legal
+ * edit would be refused by the route as "body too large" before validation ever
+ * ran. Size is not the character count: `JSON.stringify` expands a control
+ * character to `\uXXXX`, six bytes for one code unit. At the structural limits —
+ * 200 group records, 2 000 members, every id and name filled with control
+ * characters — the document serializes to about 1.89 MB, so this cap sits above
+ * that with headroom. `contract.spec.ts` builds that document and measures it.
  */
-export const MAX_DOCUMENT_BYTES = 1_000_000
+export const MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
 
 /** Cap on stored groups; a document above it is rejected rather than trimmed. */
 export const MAX_GROUPS = 200

@@ -124,7 +124,7 @@ function readBody(req) {
 		let size = 0;
 		req.on("data", (chunk) => {
 			size += chunk.length;
-			if (size > 1e6) {
+			if (size > 2097152) {
 				reject(/* @__PURE__ */ new Error("body too large"));
 				req.destroy();
 				return;
