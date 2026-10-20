@@ -62,7 +62,8 @@
     "lint:fix": "oxlint --fix",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "tsc --noEmit && oxlint && vitest run && tsdown",
+    "check:bundle": "node scripts/check-client-purity.mjs",
+    "check": "tsc --noEmit && oxlint && vitest run && tsdown && node scripts/check-client-purity.mjs",
     "prepublishOnly": "npm run check"
   },
   "peerDependencies": {
