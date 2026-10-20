@@ -51,6 +51,11 @@ function isBoundedId(value, limit) {
 *
 * Unknown extra fields are dropped, so a document written by a later version
 * still loads; a malformed one is rejected whole rather than partially applied.
+*
+* One normalization is worth naming: a Workspace may appear at most once in the
+* document, because a Workspace lives in one group. A repeated member is dropped
+* rather than rejected whole — the same treatment an unknown field gets — so a
+* hand-edited file with a stray duplicate still opens.
 * @param raw - parsed JSON body or file content.
 * @returns the normalized document, or `null` when the shape is invalid.
 */
@@ -58,20 +63,30 @@ function normalizeGroupDocument(raw) {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
 	const groups = raw.groups;
 	if (!Array.isArray(groups) || groups.length > 200) return null;
-	const seen = /* @__PURE__ */ new Set();
+	const seenIds = /* @__PURE__ */ new Set();
+	const placed = /* @__PURE__ */ new Set();
 	const out = [];
+	let total = 0;
 	for (const group of groups) {
 		if (group === null || typeof group !== "object" || Array.isArray(group)) return null;
 		const { id, name, workspaceIds } = group;
 		if (!isBoundedId(id, 128) || typeof name !== "string" || name.length > 200) return null;
-		if (seen.has(id)) return null;
-		seen.add(id);
+		if (seenIds.has(id)) return null;
+		seenIds.add(id);
 		if (!Array.isArray(workspaceIds) || workspaceIds.length > 500) return null;
-		if (!workspaceIds.every((member) => isBoundedId(member, 128))) return null;
+		const members = [];
+		for (const member of workspaceIds) {
+			if (!isBoundedId(member, 128)) return null;
+			if (placed.has(member)) continue;
+			placed.add(member);
+			members.push(member);
+		}
+		total += members.length;
+		if (total > 2e3) return null;
 		out.push({
 			id,
 			name,
-			workspaceIds: [...workspaceIds]
+			workspaceIds: members
 		});
 	}
 	return {
