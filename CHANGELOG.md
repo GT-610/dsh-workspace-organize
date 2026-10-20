@@ -39,6 +39,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A workspace is placed at most once. A document naming the same workspace in
   two groups, or twice in one, is normalized to the first occurrence instead of
   rendering it under both headings.
+- A stored expand/collapse choice no longer outlives its node: deleting a group
+  or a workspace used to leave its key in the browser mirror forever.
 
 ### Changed
 
@@ -48,6 +50,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   group × workspaces per render.
 - The package declares `"icon": "./icon.svg"`, the form every shipped bundle
   uses, and two dev dependencies nothing imported are gone.
+- CI checks that the client bundle requests only the shell's baseline modules.
+  A request outside it fails at runtime, where the sidebar silently falls back
+  to the shipped browser; nothing else in CI read the emitted artifact.
+- The READMEs say search matches session titles, not message content.
 
 ## [0.1.0] - 2026-10-19
 
