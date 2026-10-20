@@ -93,8 +93,8 @@ After that, `pnpm dev` (`tsdown --watch`) plus a page reload is the whole loop.
 - The group document exists in exactly two places: `$DSH_HOME/storages/workspace-organize-groups.json` on the Host, and a localStorage mirror used when the Host is unreachable (the Host copy stays authoritative).
 - The archive and pin sets are not the plugin's: archiving and restoring go through the official operations, so they change the same state the shipped browser reads.
 - Writes are atomic — temporary file plus `rename`, behind a serialized write chain so concurrent requests cannot overwrite each other.
-- Reads are open (the server itself listens on loopback only). Writes accept same-origin browser requests only: `Sec-Fetch-Site` first, then an `Origin`/`Host` comparison, and a request carrying neither is refused.
-- The document is bounded and validated by one shared validator on both sides: at most 200 groups, 500 workspaces per group, 1 MiB request body. An invalid document is rejected whole rather than partially applied, and unknown fields are dropped so a document written by a later version still loads.
+- Reads are open (the server itself listens on loopback only). Writes accept same-origin browser requests only: `Sec-Fetch-Site` first, then an `Origin`/`Host` comparison, and a request carrying neither is refused. Reads answer `cache-control: no-store` and the client asks with `cache: 'no-store'`, so a reload always shows the current groups.
+- The document is bounded and validated by one shared validator on both sides: at most 200 groups, 500 workspaces per group, 2 000 members in the whole document, and a 1 MiB request body. The structural caps are chosen so any document they accept also fits the body cap. An invalid document is rejected whole rather than partially applied, and unknown fields are dropped so a document written by a later version still loads. A workspace is placed at most once — a repeated member is dropped rather than failing the whole document.
 
 ## Development
 
