@@ -241,7 +241,7 @@ const EN = {
 	showArchived: "All sessions (show archived)",
 	onlyArchived: "Only archived sessions",
 	archivedOnlyEmpty: "No archived sessions yet",
-	showAllSessions: "Show all sessions",
+	viewOtherSessions: "View other sessions",
 	archivedNotOpenable: "Archived sessions cannot be opened. Restore it to view.",
 	newSession: "New session in this workspace",
 	blankSession: "New Session",
@@ -301,7 +301,7 @@ const ZH = {
 	showArchived: "全部会话(含已归档)",
 	onlyArchived: "只看已归档会话",
 	archivedOnlyEmpty: "暂无已归档会话",
-	showAllSessions: "显示全部会话",
+	viewOtherSessions: "查看其他会话",
 	archivedNotOpenable: "已归档会话暂时无法查看，请从归档恢复后再查看。",
 	newSession: "在此工作区新建会话",
 	blankSession: "新会话",
@@ -824,6 +824,7 @@ function GroupedBrowser(props) {
 	/** The sessions a group-level operation may act on, already derived. */
 	const contentOf = (workspaceId) => contentByWorkspace.get(workspaceId) ?? [];
 	const hasVisibleContent = archivedFilter !== "only" || workspaces.some((workspace) => visibleOf(workspace.workspaceId).length > 0);
+	const hasArchived = workspaces.some((workspace) => workspace.sessionIds.some((sessionId) => archived.has(sessionId)));
 	/**
 	* Archive one Session, retrying once through the stop-then-archive path.
 	*
@@ -1396,16 +1397,12 @@ function GroupedBrowser(props) {
 				"aria-label": messages.organizeTitle,
 				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 					className: "dwo-empty",
-					children: [
-						messages.archivedOnlyEmpty,
-						" ",
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							className: "dwo-empty-link",
-							onClick: () => chooseArchivedFilter("default"),
-							children: messages.showAllSessions
-						})
-					]
+					children: [hasArchived ? messages.noMatches : messages.archivedOnlyEmpty, !hasArchived && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [" ", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						className: "dwo-empty-link",
+						onClick: () => chooseArchivedFilter("default"),
+						children: messages.viewOtherSessions
+					})] })]
 				})
 			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "dwo-list",

@@ -337,8 +337,22 @@ describe('GroupedBrowser archived rows', () => {
     await screen.findByText('named')
     await chooseViewOption(messages.onlyArchived)
     expect(await screen.findByText(messages.archivedOnlyEmpty)).toBeDefined()
-    await userEvent.click(screen.getByText(messages.showAllSessions))
+    await userEvent.click(screen.getByText(messages.viewOtherSessions))
     expect(await screen.findByText('named')).toBeDefined()
+  })
+
+  it('says "no matches" when the archive holds rows the query misses', async () => {
+    mountWithArchive()
+    await screen.findByText('named')
+    await chooseViewOption(messages.onlyArchived)
+    expect(await screen.findByText('gone')).toBeDefined()
+    // `gone` is archived but does not match: the empty state must name the
+    // search, not claim the archive is empty.
+    await userEvent.click(document.querySelector('.dwo-search-btn') as HTMLElement)
+    await userEvent.type(await screen.findByPlaceholderText(messages.search), 'zzz')
+    expect(await screen.findByText(messages.noMatches)).toBeDefined()
+    expect(screen.queryByText(messages.archivedOnlyEmpty)).toBeNull()
+    expect(screen.queryByText(messages.viewOtherSessions)).toBeNull()
   })
 
   it('remembers the filter across a reload', async () => {

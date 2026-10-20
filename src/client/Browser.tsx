@@ -308,6 +308,12 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const hasVisibleContent = archivedFilter !== 'only'
     || workspaces.some(workspace => visibleOf(workspace.workspaceId).length > 0)
 
+  // Whether the archive holds anything, judged without the search. `visibleOf`
+  // folds the query in, so a typed query that matches no archived row would
+  // otherwise read as "nothing is archived" and print the wrong empty state.
+  const hasArchived = workspaces.some(workspace =>
+    workspace.sessionIds.some(sessionId => archived.has(sessionId)))
+
   /**
    * Archive one Session, retrying once through the stop-then-archive path.
    *
@@ -779,15 +785,25 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           ? (
               <div className="dwo-list" role="tree" aria-label={messages.organizeTitle}>
                 <div className="dwo-empty">
-                  {messages.archivedOnlyEmpty}
-                  {' '}
-                  <button
-                    type="button"
-                    className="dwo-empty-link"
-                    onClick={() => chooseArchivedFilter('default')}
-                  >
-                    {messages.showAllSessions}
-                  </button>
+                  {/* An empty archive and a query that misses are different
+                      facts, and the row below has to name the right one. */}
+                  {hasArchived ? messages.noMatches : messages.archivedOnlyEmpty}
+                  {!hasArchived && (
+                    <>
+                      {' '}
+                      {/* The way back is the shipped browser's "view other
+                          sessions": an ordinary view. With an empty archive
+                          `default` and `show` render the same rows, so there is
+                          nothing for `show` to add. */}
+                      <button
+                        type="button"
+                        className="dwo-empty-link"
+                        onClick={() => chooseArchivedFilter('default')}
+                      >
+                        {messages.viewOtherSessions}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )

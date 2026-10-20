@@ -38,7 +38,7 @@ export interface Messages {
   showArchived: string
   onlyArchived: string
   archivedOnlyEmpty: string
-  showAllSessions: string
+  viewOtherSessions: string
   archivedNotOpenable: string
   // Rows
   newSession: string
@@ -102,7 +102,7 @@ const EN: Messages = {
   showArchived: 'All sessions (show archived)',
   onlyArchived: 'Only archived sessions',
   archivedOnlyEmpty: 'No archived sessions yet',
-  showAllSessions: 'Show all sessions',
+  viewOtherSessions: 'View other sessions',
   archivedNotOpenable: 'Archived sessions cannot be opened. Restore it to view.',
   newSession: 'New session in this workspace',
   blankSession: 'New Session',
@@ -163,7 +163,7 @@ const ZH: Messages = {
   showArchived: '全部会话(含已归档)',
   onlyArchived: '只看已归档会话',
   archivedOnlyEmpty: '暂无已归档会话',
-  showAllSessions: '显示全部会话',
+  viewOtherSessions: '查看其他会话',
   archivedNotOpenable: '已归档会话暂时无法查看，请从归档恢复后再查看。',
   newSession: '在此工作区新建会话',
   blankSession: '新会话',
