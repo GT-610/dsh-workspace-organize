@@ -116,7 +116,7 @@ function mirroredDocument() {
 async function loadGroupDocument() {
 	const fallback = mirroredDocument();
 	try {
-		const response = await fetch(GROUP_ROUTE);
+		const response = await fetch(GROUP_ROUTE, { cache: "no-store" });
 		if (response.ok) {
 			const doc = normalizeGroupDocument(await response.json());
 			if (doc !== null) return doc;

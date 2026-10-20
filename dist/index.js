@@ -128,7 +128,7 @@ function readBody(req) {
 function apply(ctx) {
 	const webServer = ctx.get("webServer");
 	if (webServer === void 0) {
-		ctx.logger?.warn?.("workspace-organize: webServer service is unavailable; groups stay browser-local");
+		ctx.logger.warn("workspace-organize: webServer service is unavailable; groups stay browser-local");
 		return;
 	}
 	const home = process.env.DSH_HOME ?? join(homedir(), ".dsh");
@@ -159,6 +159,11 @@ function apply(ctx) {
 		const reply = (code, body) => {
 			res.statusCode = code;
 			res.setHeader("content-type", "application/json; charset=utf-8");
+			res.setHeader("cache-control", "no-store");
+			if (req.method === "HEAD") {
+				res.end();
+				return;
+			}
 			res.end(JSON.stringify(body));
 		};
 		try {
@@ -190,7 +195,7 @@ function apply(ctx) {
 			cache = doc;
 			reply(200, doc);
 		} catch (error) {
-			ctx.logger?.warn?.(`workspace-organize: ${req.method ?? "GET"} ${GROUP_ROUTE} failed: ${String(error)}`);
+			ctx.logger.warn(`workspace-organize: ${req.method ?? "GET"} ${GROUP_ROUTE} failed: ${String(error)}`);
 			reply(500, { error: "internal error" });
 		}
 	};

@@ -49,7 +49,9 @@ function mirroredDocument(): GroupDocument | undefined {
 export async function loadGroupDocument(): Promise<GroupDocument> {
   const fallback = mirroredDocument()
   try {
-    const response = await fetch(GROUP_ROUTE)
+    // `no-store` because the Host answers live plugin state: a cached response
+    // would render a group tree that another window has already replaced.
+    const response = await fetch(GROUP_ROUTE, { cache: 'no-store' })
     if (response.ok) {
       const doc = normalizeGroupDocument(await response.json())
       if (doc !== null) return doc
