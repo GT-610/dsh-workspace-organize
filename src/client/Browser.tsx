@@ -794,7 +794,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         <Menu
           open
           portal
-          anchor={<span className="dwo-anchor" style={{ position: 'fixed', left: menu.at.x, top: menu.at.y }} />}
+          // A zero-size point the card hangs from; `getAnchorRect` below is what
+          // actually places it, so this anchor only has to exist.
+          anchor={<span style={{ position: 'fixed', left: menu.at.x, top: menu.at.y }} />}
           getAnchorRect={() => new DOMRect(menu.at.x, menu.at.y, 0, 0)}
           items={menu.items}
           selectedId={menu.selectedId}

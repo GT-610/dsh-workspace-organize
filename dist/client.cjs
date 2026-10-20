@@ -1392,14 +1392,11 @@ function GroupedBrowser(props) {
 			menu !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {
 				open: true,
 				portal: true,
-				anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-					className: "dwo-anchor",
-					style: {
-						position: "fixed",
-						left: menu.at.x,
-						top: menu.at.y
-					}
-				}),
+				anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { style: {
+					position: "fixed",
+					left: menu.at.x,
+					top: menu.at.y
+				} }),
 				getAnchorRect: () => new DOMRect(menu.at.x, menu.at.y, 0, 0),
 				items: menu.items,
 				selectedId: menu.selectedId,
