@@ -824,7 +824,7 @@ function GroupedBrowser(props) {
 	/** The sessions a group-level operation may act on, already derived. */
 	const contentOf = (workspaceId) => contentByWorkspace.get(workspaceId) ?? [];
 	const hasVisibleContent = archivedFilter !== "only" || workspaces.some((workspace) => visibleOf(workspace.workspaceId).length > 0);
-	const hasArchived = workspaces.some((workspace) => workspace.sessionIds.some((sessionId) => archived.has(sessionId)));
+	const hasArchived = workspaces.some((workspace) => workspace.sessionIds.some((sessionId) => sessionShown(list.byId[sessionId], sessionId, main, archived, "only")));
 	/**
 	* Archive one Session, retrying once through the stop-then-archive path.
 	*

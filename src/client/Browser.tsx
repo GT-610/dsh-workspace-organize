@@ -54,6 +54,7 @@ import {
   groupRollUp,
   mainSessionId,
   rowStatus,
+  sessionShown,
   timeLabel,
   visibleSessionIds,
   type ArchivedFilter,
@@ -308,11 +309,15 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const hasVisibleContent = archivedFilter !== 'only'
     || workspaces.some(workspace => visibleOf(workspace.workspaceId).length > 0)
 
-  // Whether the archive holds anything, judged without the search. `visibleOf`
-  // folds the query in, so a typed query that matches no archived row would
-  // otherwise read as "nothing is archived" and print the wrong empty state.
+  // Whether the archived-only view would have a row to show if the search were
+  // cleared. Two traps live here: `visibleOf` folds the query in, so a query
+  // that matches no archived row would read as "nothing is archived"; and
+  // membership alone is not enough either, since a row the catalog does not
+  // carry, or a spent blank, never renders. Asking the renderer's own predicate
+  // keeps the empty state from contradicting the tree it sits in.
   const hasArchived = workspaces.some(workspace =>
-    workspace.sessionIds.some(sessionId => archived.has(sessionId)))
+    workspace.sessionIds.some(sessionId =>
+      sessionShown(list.byId[sessionId], sessionId, main, archived, 'only')))
 
   /**
    * Archive one Session, retrying once through the stop-then-archive path.
