@@ -86,7 +86,7 @@ After that, `pnpm dev` (`tsdown --watch`) plus a page reload is the whole loop.
 | Archive / restore one session | Trailing archive button on the session row, or its context menu |
 | See archived sessions | Header slider button → All sessions (show archived) / Only archived sessions |
 | Expand / collapse everything | Header slider button → Expand all / Collapse all |
-| Search sessions | Header magnifier |
+| Search sessions by title | Header magnifier |
 
 ## Data and privacy
 
