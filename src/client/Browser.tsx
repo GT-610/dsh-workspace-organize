@@ -42,6 +42,7 @@ import {
   loadExpansion,
   loadGroupDocument,
   newGroupId,
+  pruneExpansion,
   saveArchivedFilter,
   saveExpansion,
   saveGroupDocument,
@@ -220,6 +221,18 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     setExpansion(next)
     saveExpansion(next)
   }, [])
+
+  // A stored disclosure choice outlives the node it describes, so a deleted group
+  // or workspace would leave its key in the mirror forever. The tree only knows
+  // the live keys once both snapshots have arrived.
+  useEffect(() => {
+    if (!workspaceReady || groups === undefined) return
+    const live = new Set<string>()
+    for (const group of groups) live.add(`g:${group.id}`)
+    for (const workspace of workspaces) live.add(`ws:${workspace.workspaceId}`)
+    const next = pruneExpansion(expansion, live)
+    if (next !== expansion) persistExpansion(next)
+  }, [workspaceReady, groups, workspaces, expansion, persistExpansion])
 
   const chooseArchivedFilter = useCallback((next: ArchivedFilter) => {
     setArchivedFilter(next)

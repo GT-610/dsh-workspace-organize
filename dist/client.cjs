@@ -173,6 +173,23 @@ function loadExpansion() {
 	}
 }
 /**
+* Keep only the disclosure choices whose node still exists.
+*
+* Every explicit choice is remembered forever otherwise: a deleted group or a
+* deleted workspace leaves its key behind, so the mirror grows with every edit
+* the operator ever made. The map is returned untouched when nothing is stale,
+* so the caller can skip a redundant write.
+* @param state - the stored choices.
+* @param liveKeys - keys the current tree can produce.
+* @returns the pruned choices, or `state` itself when every key is live.
+*/
+function pruneExpansion(state, liveKeys) {
+	if (Object.keys(state).filter((key) => !liveKeys.has(key)).length === 0) return state;
+	const next = {};
+	for (const [key, value] of Object.entries(state)) if (liveKeys.has(key)) next[key] = value;
+	return next;
+}
+/**
 * Mirror the disclosure choices for the next reload.
 * @param next - the complete choice map.
 */
@@ -719,6 +736,20 @@ function GroupedBrowser(props) {
 		setExpansion(next);
 		saveExpansion(next);
 	}, []);
+	(0, react.useEffect)(() => {
+		if (!workspaceReady || groups === void 0) return;
+		const live = /* @__PURE__ */ new Set();
+		for (const group of groups) live.add(`g:${group.id}`);
+		for (const workspace of workspaces) live.add(`ws:${workspace.workspaceId}`);
+		const next = pruneExpansion(expansion, live);
+		if (next !== expansion) persistExpansion(next);
+	}, [
+		workspaceReady,
+		groups,
+		workspaces,
+		expansion,
+		persistExpansion
+	]);
 	const chooseArchivedFilter = (0, react.useCallback)((next) => {
 		setArchivedFilter(next);
 		saveArchivedFilter(next);

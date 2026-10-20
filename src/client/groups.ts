@@ -101,6 +101,25 @@ export function loadExpansion(): ExpansionState {
 }
 
 /**
+ * Keep only the disclosure choices whose node still exists.
+ *
+ * Every explicit choice is remembered forever otherwise: a deleted group or a
+ * deleted workspace leaves its key behind, so the mirror grows with every edit
+ * the operator ever made. The map is returned untouched when nothing is stale,
+ * so the caller can skip a redundant write.
+ * @param state - the stored choices.
+ * @param liveKeys - keys the current tree can produce.
+ * @returns the pruned choices, or `state` itself when every key is live.
+ */
+export function pruneExpansion(state: ExpansionState, liveKeys: ReadonlySet<string>): ExpansionState {
+  const stale = Object.keys(state).filter(key => !liveKeys.has(key))
+  if (stale.length === 0) return state
+  const next: Record<string, boolean> = {}
+  for (const [key, value] of Object.entries(state)) if (liveKeys.has(key)) next[key] = value
+  return next
+}
+
+/**
  * Mirror the disclosure choices for the next reload.
  * @param next - the complete choice map.
  */

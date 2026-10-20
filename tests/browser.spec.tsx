@@ -236,6 +236,25 @@ describe('GroupedBrowser menus', () => {
       expect(stored['g:g1']).toBe(false)
     })
   })
+
+  it('drops disclosure choices for nodes that no longer exist', async () => {
+    // Keyed for a group and a workspace the catalog does not have: the mirror
+    // must not accumulate them forever.
+    localStorage.setItem('workspaceOrganize.expansion', JSON.stringify({
+      'g:g1': true,
+      'ws:repo': false,
+      'g:deleted': true,
+      'ws:gone-away': false,
+    }))
+    mountBrowser()
+    await screen.findByText('Work')
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
+      expect(Object.keys(stored).toSorted()).toEqual(['g:g1', 'ws:repo'])
+      expect(stored['g:g1']).toBe(true)
+      expect(stored['ws:repo']).toBe(false)
+    })
+  })
 })
 
 /**
