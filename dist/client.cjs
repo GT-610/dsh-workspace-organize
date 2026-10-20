@@ -402,15 +402,19 @@ function sessionShown(row, id, main, archived, archivedFilter = "default") {
 * A blank placeholder never matches a query: its canonical title is the
 * directory name, so matching it would tie search to one language. The
 * surviving placeholder leads its Workspace, matching the order
-* `sectionMembers` gives placeholders in the shipped tree. Archived rows trail
-* the live ones, which is where the shipped manual order keeps them.
+* `sectionMembers` gives placeholders in the shipped tree.
+*
+* Two partitions apply to whatever the filter and query leave: the placeholder
+* leads, and archived rows trail the live ones — where the shipped manual order
+* keeps them. Both hold for search results as well, so a match from the archive
+* never outranks a live one.
 * @param selection - the snapshots and query to read.
-* @returns visible session ids, placeholder first.
+* @returns visible session ids, placeholder first, archived last.
 */
 function visibleSessionIds(selection) {
 	const { list, workspace, main, archived, query, archivedFilter = "default" } = selection;
-	const ids = workspace.sessionIds.filter((id) => sessionShown(list.byId[id], id, main, archived, archivedFilter));
-	if (query !== "") return ids.filter((id) => {
+	const shown = workspace.sessionIds.filter((id) => sessionShown(list.byId[id], id, main, archived, archivedFilter));
+	const matched = query === "" ? shown : shown.filter((id) => {
 		const row = list.byId[id];
 		if (row === void 0 || row.blank) return false;
 		return row.displayTitle.toLowerCase().includes(query);
@@ -418,7 +422,7 @@ function visibleSessionIds(selection) {
 	const leading = [];
 	const live = [];
 	const spent = [];
-	for (const id of ids) if (id === main) leading.push(id);
+	for (const id of matched) if (id === main) leading.push(id);
 	else if (archived.has(id)) spent.push(id);
 	else live.push(id);
 	return [

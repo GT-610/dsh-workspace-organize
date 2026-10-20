@@ -178,6 +178,17 @@ describe('archived-row visibility', () => {
   it('hides the placeholder from an archived-only view', () => {
     expect(visibleSessionIds(selection(sessions, target, '', [], 'only'))).toEqual([])
   })
+
+  it('trails an archived match behind a live one in search results', () => {
+    // Both match, and the archived row sits first in membership order: the
+    // live one still has to render first.
+    const older = row('older-archived', { displayTitle: 'weekly report' })
+    const newer = row('newer-live', { displayTitle: 'weekly report' })
+    const both = list([older, newer])
+    const ordered = workspace('repo', ['older-archived', 'newer-live'])
+    const matched = visibleSessionIds(selection(both, ordered, 'report', ['older-archived'], 'show'))
+    expect(matched).toEqual(['newer-live', 'older-archived'])
+  })
 })
 
 describe('groupRollUp', () => {
