@@ -17,6 +17,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+// Loads the `ctx.webServer` augmentation, without which the service is `any`
+// and every route shape below would go unchecked.
+import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
   GROUP_ROUTE,
   GROUP_STORAGE_FILE,
@@ -82,7 +85,9 @@ export function readBody(req: IncomingMessage): Promise<string> {
 export function apply(ctx: Context): (() => void) | undefined {
   const webServer = ctx.get('webServer')
   if (webServer === undefined) {
-    ctx.logger?.warn?.('workspace-organize: webServer service is unavailable; groups stay browser-local')
+    // `inject` normally guarantees the service; this covers a carrier that
+    // unloads between activation and the first request.
+    ctx.logger.warn('workspace-organize: webServer service is unavailable; groups stay browser-local')
     return undefined
   }
 
@@ -118,6 +123,14 @@ export function apply(ctx: Context): (() => void) | undefined {
     const reply = (code: number, body: unknown): void => {
       res.statusCode = code
       res.setHeader('content-type', 'application/json; charset=utf-8')
+      // Reads answer live plugin state: a cached copy would let a reload render
+      // a stale group tree after an edit made elsewhere.
+      res.setHeader('cache-control', 'no-store')
+      // HEAD keeps the headers a GET would send and drops the body.
+      if (req.method === 'HEAD') {
+        res.end()
+        return
+      }
       res.end(JSON.stringify(body))
     }
     try {
@@ -149,7 +162,7 @@ export function apply(ctx: Context): (() => void) | undefined {
       cache = doc
       reply(200, doc)
     } catch (error) {
-      ctx.logger?.warn?.(`workspace-organize: ${req.method ?? 'GET'} ${GROUP_ROUTE} failed: ${String(error)}`)
+      ctx.logger.warn(`workspace-organize: ${req.method ?? 'GET'} ${GROUP_ROUTE} failed: ${String(error)}`)
       reply(500, { error: 'internal error' })
     }
   }

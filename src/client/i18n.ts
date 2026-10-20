@@ -3,8 +3,12 @@
  *
  * The browser follows `navigator.language` and carries the same two locales the
  * shipped workspace surface ships, so a group tree and a session row never
- * disagree about a language. A shell-propagated locale is the better long-term
- * source; this keeps the current behavior until the region can read it.
+ * disagree about a language.
+ *
+ * The shell's own locale service would be the better source, but it is not on
+ * the client baseline: reading it would make this bundle depend on a package the
+ * module table cannot seed, for one lookup at mount. `navigator.language` is the
+ * honest choice until that changes.
  */
 
 /** Time buckets the rows date themselves with, coarsest last. */

@@ -16,7 +16,11 @@ export const GROUP_ROUTE = '/api/workspace-organize'
 /** File name inside `$DSH_HOME/storages`. */
 export const GROUP_STORAGE_FILE = 'workspace-organize-groups.json'
 
-/** Request body cap: group documents are tiny; 1 MiB is generous. */
+/**
+ * Request body cap. The structural caps below are chosen so that even a
+ * document at their limit fits here: 2000 members of at most 128 characters
+ * plus 200 group records is a few hundred kilobytes, never a megabyte.
+ */
 export const MAX_DOCUMENT_BYTES = 1_000_000
 
 /** Cap on stored groups; a document above it is rejected rather than trimmed. */
@@ -24,6 +28,15 @@ export const MAX_GROUPS = 200
 
 /** Cap on the Workspaces one group may hold. */
 export const MAX_MEMBERS_PER_GROUP = 500
+
+/**
+ * Cap on members across the whole document.
+ *
+ * A member belongs to at most one group, and every real install has far fewer
+ * Workspaces than this. The cap is what keeps {@link MAX_DOCUMENT_BYTES}
+ * sufficient for any document the validator accepts.
+ */
+export const MAX_TOTAL_MEMBERS = 2_000
 
 /** One named group of Workspaces, in display order. */
 export interface WorkspaceGroup {
@@ -58,6 +71,11 @@ function isBoundedId(value: unknown, limit: number): value is string {
  *
  * Unknown extra fields are dropped, so a document written by a later version
  * still loads; a malformed one is rejected whole rather than partially applied.
+ *
+ * One normalization is worth naming: a Workspace may appear at most once in the
+ * document, because a Workspace lives in one group. A repeated member is dropped
+ * rather than rejected whole — the same treatment an unknown field gets — so a
+ * hand-edited file with a stray duplicate still opens.
  * @param raw - parsed JSON body or file content.
  * @returns the normalized document, or `null` when the shape is invalid.
  */
@@ -65,17 +83,27 @@ export function normalizeGroupDocument(raw: unknown): GroupDocument | null {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
   const groups = (raw as { groups?: unknown }).groups
   if (!Array.isArray(groups) || groups.length > MAX_GROUPS) return null
-  const seen = new Set<string>()
+  const seenIds = new Set<string>()
+  const placed = new Set<string>()
   const out: WorkspaceGroup[] = []
+  let total = 0
   for (const group of groups) {
     if (group === null || typeof group !== 'object' || Array.isArray(group)) return null
     const { id, name, workspaceIds } = group as Record<string, unknown>
     if (!isBoundedId(id, 128) || typeof name !== 'string' || name.length > 200) return null
-    if (seen.has(id)) return null
-    seen.add(id)
+    if (seenIds.has(id)) return null
+    seenIds.add(id)
     if (!Array.isArray(workspaceIds) || workspaceIds.length > MAX_MEMBERS_PER_GROUP) return null
-    if (!workspaceIds.every(member => isBoundedId(member, 128))) return null
-    out.push({ id, name, workspaceIds: [...workspaceIds] })
+    const members: string[] = []
+    for (const member of workspaceIds) {
+      if (!isBoundedId(member, 128)) return null
+      if (placed.has(member)) continue
+      placed.add(member)
+      members.push(member)
+    }
+    total += members.length
+    if (total > MAX_TOTAL_MEMBERS) return null
+    out.push({ id, name, workspaceIds: members })
   }
   return { version: 1, groups: out }
 }

@@ -51,6 +51,11 @@ function isBoundedId(value, limit) {
 *
 * Unknown extra fields are dropped, so a document written by a later version
 * still loads; a malformed one is rejected whole rather than partially applied.
+*
+* One normalization is worth naming: a Workspace may appear at most once in the
+* document, because a Workspace lives in one group. A repeated member is dropped
+* rather than rejected whole — the same treatment an unknown field gets — so a
+* hand-edited file with a stray duplicate still opens.
 * @param raw - parsed JSON body or file content.
 * @returns the normalized document, or `null` when the shape is invalid.
 */
@@ -58,20 +63,30 @@ function normalizeGroupDocument(raw) {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
 	const groups = raw.groups;
 	if (!Array.isArray(groups) || groups.length > 200) return null;
-	const seen = /* @__PURE__ */ new Set();
+	const seenIds = /* @__PURE__ */ new Set();
+	const placed = /* @__PURE__ */ new Set();
 	const out = [];
+	let total = 0;
 	for (const group of groups) {
 		if (group === null || typeof group !== "object" || Array.isArray(group)) return null;
 		const { id, name, workspaceIds } = group;
 		if (!isBoundedId(id, 128) || typeof name !== "string" || name.length > 200) return null;
-		if (seen.has(id)) return null;
-		seen.add(id);
+		if (seenIds.has(id)) return null;
+		seenIds.add(id);
 		if (!Array.isArray(workspaceIds) || workspaceIds.length > 500) return null;
-		if (!workspaceIds.every((member) => isBoundedId(member, 128))) return null;
+		const members = [];
+		for (const member of workspaceIds) {
+			if (!isBoundedId(member, 128)) return null;
+			if (placed.has(member)) continue;
+			placed.add(member);
+			members.push(member);
+		}
+		total += members.length;
+		if (total > 2e3) return null;
 		out.push({
 			id,
 			name,
-			workspaceIds: [...workspaceIds]
+			workspaceIds: members
 		});
 	}
 	return {
@@ -116,7 +131,7 @@ function mirroredDocument() {
 async function loadGroupDocument() {
 	const fallback = mirroredDocument();
 	try {
-		const response = await fetch(GROUP_ROUTE);
+		const response = await fetch(GROUP_ROUTE, { cache: "no-store" });
 		if (response.ok) {
 			const doc = normalizeGroupDocument(await response.json());
 			if (doc !== null) return doc;
@@ -156,6 +171,23 @@ function loadExpansion() {
 	} catch {
 		return {};
 	}
+}
+/**
+* Keep only the disclosure choices whose node still exists.
+*
+* Every explicit choice is remembered forever otherwise: a deleted group or a
+* deleted workspace leaves its key behind, so the mirror grows with every edit
+* the operator ever made. The map is returned untouched when nothing is stale,
+* so the caller can skip a redundant write.
+* @param state - the stored choices.
+* @param liveKeys - keys the current tree can produce.
+* @returns the pruned choices, or `state` itself when every key is live.
+*/
+function pruneExpansion(state, liveKeys) {
+	if (Object.keys(state).filter((key) => !liveKeys.has(key)).length === 0) return state;
+	const next = {};
+	for (const [key, value] of Object.entries(state)) if (liveKeys.has(key)) next[key] = value;
+	return next;
 }
 /**
 * Mirror the disclosure choices for the next reload.
@@ -679,10 +711,21 @@ function GroupedBrowser(props) {
 			});
 			return changed ? next : current;
 		});
-	}, [workspaceReady, workspaces]);
-	const groupedIds = (0, react.useMemo)(() => new Set((groups ?? []).flatMap((group) => group.workspaceIds)), [groups]);
-	const ungrouped = (0, react.useMemo)(() => workspaces.filter((workspace) => !groupedIds.has(workspace.workspaceId)), [workspaces, groupedIds]);
+	}, [
+		workspaceReady,
+		workspaces,
+		groups
+	]);
 	const normalizedQuery = query.trim().toLowerCase();
+	const currentGroups = (0, react.useMemo)(() => groups ?? [], [groups]);
+	const groupedIds = (0, react.useMemo)(() => new Set(currentGroups.flatMap((group) => group.workspaceIds)), [currentGroups]);
+	const ungrouped = (0, react.useMemo)(() => workspaces.filter((workspace) => !groupedIds.has(workspace.workspaceId)), [workspaces, groupedIds]);
+	const workspaceById = (0, react.useMemo)(() => new Map(workspaces.map((workspace) => [workspace.workspaceId, workspace])), [workspaces]);
+	const destinationsByWorkspace = (0, react.useMemo)(() => {
+		const out = /* @__PURE__ */ new Map();
+		for (const workspace of workspaces) out.set(workspace.workspaceId, currentGroups.filter((group) => !group.workspaceIds.includes(workspace.workspaceId)));
+		return out;
+	}, [currentGroups, workspaces]);
 	const main = (0, react.useMemo)(() => mainSessionId(list), [list]);
 	const currentSessionId = panelActive ? void 0 : main;
 	const activeWorkspaceId = (0, react.useMemo)(() => {
@@ -693,6 +736,20 @@ function GroupedBrowser(props) {
 		setExpansion(next);
 		saveExpansion(next);
 	}, []);
+	(0, react.useEffect)(() => {
+		if (!workspaceReady || groups === void 0) return;
+		const live = /* @__PURE__ */ new Set();
+		for (const group of groups) live.add(`g:${group.id}`);
+		for (const workspace of workspaces) live.add(`ws:${workspace.workspaceId}`);
+		const next = pruneExpansion(expansion, live);
+		if (next !== expansion) persistExpansion(next);
+	}, [
+		workspaceReady,
+		groups,
+		workspaces,
+		expansion,
+		persistExpansion
+	]);
 	const chooseArchivedFilter = (0, react.useCallback)((next) => {
 		setArchivedFilter(next);
 		saveArchivedFilter(next);
@@ -715,29 +772,54 @@ function GroupedBrowser(props) {
 		return explicit === void 0 ? fallback : explicit;
 	};
 	/** The visible-session derivation input for one Workspace. */
-	const selectFor = (workspace) => ({
+	const selectFor = (0, react.useCallback)((workspace) => ({
 		list,
 		workspace,
 		main,
 		archived,
 		query: normalizedQuery,
 		archivedFilter
-	});
-	const hasVisibleContent = archivedFilter !== "only" || workspaces.some((workspace) => visibleSessionIds(selectFor(workspace)).length > 0);
+	}), [
+		list,
+		main,
+		archived,
+		normalizedQuery,
+		archivedFilter
+	]);
+	const visibleByWorkspace = (0, react.useMemo)(() => {
+		const out = /* @__PURE__ */ new Map();
+		for (const workspace of workspaces) out.set(workspace.workspaceId, visibleSessionIds(selectFor(workspace)));
+		return out;
+	}, [workspaces, selectFor]);
 	/**
-	* The sessions a group-level operation may act on.
+	* The sessions a group-level operation may act on, per Workspace.
 	*
 	* Deliberately independent of the current search and archive filter: the
 	* confirmation counts exactly what the operation will touch, so archiving a
 	* group while a search is typed cannot promise three rows and archive ten.
-	* @param workspace - one member Workspace.
-	* @returns its non-blank, non-archived session ids.
 	*/
-	const contentOf = (workspace) => contentSessionIds({
-		...selectFor(workspace),
-		query: "",
-		archivedFilter: "default"
-	});
+	const contentByWorkspace = (0, react.useMemo)(() => {
+		const out = /* @__PURE__ */ new Map();
+		for (const workspace of workspaces) out.set(workspace.workspaceId, contentSessionIds({
+			list,
+			workspace,
+			main,
+			archived,
+			query: "",
+			archivedFilter: "default"
+		}));
+		return out;
+	}, [
+		workspaces,
+		list,
+		main,
+		archived
+	]);
+	/** The visible rows of one Workspace, already derived for this render. */
+	const visibleOf = (workspaceId) => visibleByWorkspace.get(workspaceId) ?? [];
+	/** The sessions a group-level operation may act on, already derived. */
+	const contentOf = (workspaceId) => contentByWorkspace.get(workspaceId) ?? [];
+	const hasVisibleContent = archivedFilter !== "only" || workspaces.some((workspace) => visibleOf(workspace.workspaceId).length > 0);
 	/**
 	* Archive one Session, retrying once through the stop-then-archive path.
 	*
@@ -873,10 +955,10 @@ function GroupedBrowser(props) {
 		}, key);
 	};
 	const workspaceRow = (workspace, depth) => {
-		const ids = visibleSessionIds(selectFor(workspace));
+		const ids = visibleOf(workspace.workspaceId);
 		const key = `ws:${workspace.workspaceId}`;
 		const isOpen = isExpanded(key, workspace.workspaceId === activeWorkspaceId);
-		const others = (groups ?? []).filter((group) => !group.workspaceIds.includes(workspace.workspaceId));
+		const others = destinationsByWorkspace.get(workspace.workspaceId) ?? [];
 		const spec = () => {
 			const items = [{
 				id: "rename",
@@ -913,7 +995,7 @@ function GroupedBrowser(props) {
 					current: workspace.title
 				}),
 				newSession: () => services.startSession(workspace.workspaceId),
-				remove: () => persist((groups ?? []).map((group) => ({
+				remove: () => persist(currentGroups.map((group) => ({
 					...group,
 					workspaceIds: group.workspaceIds.filter((id) => id !== workspace.workspaceId)
 				}))),
@@ -923,7 +1005,7 @@ function GroupedBrowser(props) {
 					title: workspace.title
 				})
 			};
-			for (const target of others) actions[`move:${target.id}`] = () => persist((groups ?? []).map((group) => ({
+			for (const target of others) actions[`move:${target.id}`] = () => persist(currentGroups.map((group) => ({
 				...group,
 				workspaceIds: [...group.workspaceIds.filter((id) => id !== workspace.workspaceId), ...group.id === target.id ? [workspace.workspaceId] : []]
 			})));
@@ -1010,8 +1092,8 @@ function GroupedBrowser(props) {
 	const groupNode = (group, depth) => {
 		const key = `g:${group.id}`;
 		const isOpen = isExpanded(key, true);
-		const members = group.workspaceIds.map((id) => workspaces.find((workspace) => workspace.workspaceId === id)).filter((member) => member !== void 0);
-		const sessionCount = members.flatMap((member) => contentOf(member)).length;
+		const members = group.workspaceIds.map((id) => workspaceById.get(id)).filter((member) => member !== void 0);
+		const sessionCount = members.flatMap((member) => contentOf(member.workspaceId)).length;
 		const { running, pending } = groupRollUp(members, statuses, archived);
 		const state = pending > 0 ? "warning" : running > 0 ? "ongoing" : void 0;
 		const summary = [`${members.length} ${messages.unitWorkspaces}`];
@@ -1070,7 +1152,7 @@ function GroupedBrowser(props) {
 					name: group.name,
 					count: members.length
 				}),
-				ungroup: () => persist((groups ?? []).filter((current) => current.id !== group.id))
+				ungroup: () => persist(currentGroups.filter((current) => current.id !== group.id))
 			}
 		});
 		return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -1139,23 +1221,19 @@ function GroupedBrowser(props) {
 		if (group === void 0) return;
 		setBusy(true);
 		try {
-			for (const workspaceId of group.workspaceIds) {
-				const workspace = workspaces.find((candidate) => candidate.workspaceId === workspaceId);
-				if (workspace === void 0) continue;
-				for (const sessionId of contentOf(workspace)) await archiveWithFallback(sessionId).catch((error) => console.warn("workspace-organize: archive refused", sessionId, error));
-			}
+			for (const workspaceId of group.workspaceIds) for (const sessionId of contentOf(workspaceId)) await archiveWithFallback(sessionId).catch((error) => console.warn("workspace-organize: archive refused", sessionId, error));
 		} finally {
 			setBusy(false);
 			setDialog(void 0);
 		}
 	};
 	const confirmDeleteGroupWorkspaces = async (groupId) => {
-		const group = (groups ?? []).find((candidate) => candidate.id === groupId);
+		const group = currentGroups.find((candidate) => candidate.id === groupId);
 		if (group === void 0) return;
 		setBusy(true);
 		try {
 			for (const workspaceId of group.workspaceIds) await services.deleteWorkspace(asWorkspaceId(workspaceId)).catch((error) => console.warn("workspace-organize: delete failed", workspaceId, error));
-			persist((groups ?? []).filter((candidate) => candidate.id !== groupId));
+			persist(currentGroups.filter((candidate) => candidate.id !== groupId));
 		} finally {
 			setBusy(false);
 			setDialog(void 0);
@@ -1330,13 +1408,13 @@ function GroupedBrowser(props) {
 				role: "tree",
 				"aria-label": messages.organizeTitle,
 				children: [
-					(groups ?? []).map((group) => groupNode(group, 0)),
-					(groups ?? []).length > 0 && ungrouped.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					currentGroups.map((group) => groupNode(group, 0)),
+					currentGroups.length > 0 && ungrouped.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: "dwo-sep",
 						children: messages.ungrouped
 					}),
 					ungrouped.map((workspace) => workspaceRow(workspace, 0)),
-					(groups ?? []).length === 0 && ungrouped.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					currentGroups.length === 0 && ungrouped.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: "dwo-empty",
 						children: messages.noWorkspaces
 					})
@@ -1345,14 +1423,11 @@ function GroupedBrowser(props) {
 			menu !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {
 				open: true,
 				portal: true,
-				anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-					className: "dwo-anchor",
-					style: {
-						position: "fixed",
-						left: menu.at.x,
-						top: menu.at.y
-					}
-				}),
+				anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { style: {
+					position: "fixed",
+					left: menu.at.x,
+					top: menu.at.y
+				} }),
 				getAnchorRect: () => new DOMRect(menu.at.x, menu.at.y, 0, 0),
 				items: menu.items,
 				selectedId: menu.selectedId,
@@ -1393,12 +1468,12 @@ function GroupedBrowser(props) {
 			case "renameGroup": {
 				const trimmed = name.trim();
 				if (trimmed !== "") {
-					if (current.kind === "createGroup") persist([...groups ?? [], {
+					if (current.kind === "createGroup") persist([...currentGroups, {
 						id: newGroupId(),
 						name: trimmed,
 						workspaceIds: []
 					}]);
-					else persist((groups ?? []).map((group) => group.id === current.groupId ? {
+					else persist(currentGroups.map((group) => group.id === current.groupId ? {
 						...group,
 						name: trimmed
 					} : group));
