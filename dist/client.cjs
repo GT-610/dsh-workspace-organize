@@ -231,7 +231,8 @@ const EN = {
 	search: "Search sessions",
 	closeSearch: "Close search",
 	newGroup: "New group",
-	ungrouped: "Ungrouped",
+	ungroupedWorkspaces: "Ungrouped workspaces",
+	ungroupedSessions: "Ungrouped sessions",
 	loading: "Loading…",
 	noWorkspaces: "No workspaces yet",
 	noSessions: "No sessions",
@@ -259,6 +260,7 @@ const EN = {
 	moveToGroup: "Move to group",
 	ungroup: "Ungroup (keep workspaces)",
 	unitWorkspaces: "workspaces",
+	unitSessions: "sessions",
 	unitRunning: "running",
 	unitPending: "waiting",
 	statusApproval: "Approval",
@@ -291,7 +293,8 @@ const ZH = {
 	search: "搜索会话",
 	closeSearch: "关闭搜索",
 	newGroup: "新建分组",
-	ungrouped: "未分组",
+	ungroupedWorkspaces: "未分组的工作区",
+	ungroupedSessions: "未分组的会话",
 	loading: "加载中…",
 	noWorkspaces: "暂无工作区",
 	noSessions: "暂无会话",
@@ -319,6 +322,7 @@ const ZH = {
 	moveToGroup: "移入分组",
 	ungroup: "解散分组(保留工作区)",
 	unitWorkspaces: "工作区",
+	unitSessions: "会话",
 	unitRunning: "运行中",
 	unitPending: "待处理",
 	statusApproval: "待审批",
@@ -423,6 +427,55 @@ function visibleSessionIds(selection) {
 	const live = [];
 	const spent = [];
 	for (const id of matched) if (id === main) leading.push(id);
+	else if (archived.has(id)) spent.push(id);
+	else live.push(id);
+	return [
+		...leading,
+		...live,
+		...spent
+	];
+}
+/**
+* The sessions no Workspace accounts for, in render order.
+*
+* A Workspace owns its members through `sessionIds`, so a Session that is in
+* none of them belongs to no account at all: it is a Session whose Workspace
+* registration was deleted, or one started outside any Workspace. The shipped
+* browser trails exactly those rows in an `Ungrouped` bucket (`groupByWorkspace`
+* in ui-workspace's `tree.ts`), so shadowing that browser makes porting the
+* bucket mandatory — nothing else in this tree would give such a Session a row.
+*
+* The order is the shipped bucket's own: newest first with Session identity as
+* the deterministic tie-break, since this plugin keeps no manual order. The
+* partitions are a Workspace listing's, so both read alike: the retained
+* placeholder leads, archived rows trail live ones, and search narrows each
+* without reordering it.
+* @param list - sessions list snapshot; its `ids` are the catalog's membership.
+* @param workspaces - authoritative Workspace membership.
+* @param main - the retained session id, from {@link mainSessionId}.
+* @param archived - registry-global archive set.
+* @param query - trimmed, lower-cased search query; empty lists everything.
+* @param archivedFilter - archived-row visibility choice; omitted hides them.
+* @returns visible unowned session ids, placeholder first, archived last.
+*/
+function unownedSessionIds(list, workspaces, main, archived, query, archivedFilter = "default") {
+	const accounted = /* @__PURE__ */ new Set();
+	for (const workspace of workspaces) for (const id of workspace.sessionIds) accounted.add(id);
+	const shown = list.ids.filter((id) => !accounted.has(id) && sessionShown(list.byId[id], id, main, archived, archivedFilter)).filter((id) => {
+		if (query === "") return true;
+		const row = list.byId[id];
+		if (row === void 0 || row.blank) return false;
+		return row.displayTitle.toLowerCase().includes(query);
+	}).toSorted((left, right) => {
+		const at = list.byId[left]?.updatedAt ?? 0;
+		const other = list.byId[right]?.updatedAt ?? 0;
+		if (at !== other) return other - at;
+		return left < right ? -1 : left > right ? 1 : 0;
+	});
+	const leading = [];
+	const live = [];
+	const spent = [];
+	for (const id of shown) if (id === main) leading.push(id);
 	else if (archived.has(id)) spent.push(id);
 	else live.push(id);
 	return [
@@ -653,6 +706,13 @@ function indent(depth) {
 	return { "--dsh-workspace-indent": `${depth * 16}px` };
 }
 /**
+* Disclosure key of the bucket for Sessions no Workspace accounts for.
+*
+* Deliberately outside the `g:` and `ws:` id spaces: the bucket has no id of its
+* own, and a key that borrowed one could outlive the Workspace it named.
+*/
+const UNOWNED_KEY = "u:unowned";
+/**
 * Render the grouped Workspace browser.
 * @param props - runtime shares plus the injected official operations.
 * @returns the browsing region.
@@ -666,6 +726,7 @@ function GroupedBrowser(props) {
 	const panelActive = props.usePanelInfo((info) => info.activePanelId !== null);
 	const workspaces = workspaceSnapshot.items;
 	const workspaceReady = workspaceSnapshot.phase === "ready" && workspaceSnapshot.state !== "loading";
+	const sessionReady = list.phase === "ready";
 	const archived = (0, react.useMemo)(() => new Set(workspaceSnapshot.archivedSessionIds), [workspaceSnapshot.archivedSessionIds]);
 	const [groups, setGroups] = (0, react.useState)(void 0);
 	const [query, setQuery] = (0, react.useState)("");
@@ -736,21 +797,61 @@ function GroupedBrowser(props) {
 		if (currentSessionId === void 0) return void 0;
 		return workspaces.find((workspace) => workspace.sessionIds.includes(currentSessionId))?.workspaceId;
 	}, [currentSessionId, workspaces]);
+	const unowned = (0, react.useMemo)(() => unownedSessionIds(list, workspaces, main, archived, normalizedQuery, archivedFilter), [
+		list,
+		workspaces,
+		main,
+		archived,
+		normalizedQuery,
+		archivedFilter
+	]);
+	/**
+	* Whether the bucket has a row under any query and any archive filter.
+	*
+	* Liveness cannot read `unowned`: that derivation folds the search and the
+	* archive filter in, so a typed query narrows it to nothing — and pruning on
+	* that would throw away the operator's explicit fold choice for a bucket that
+	* is still there. This asks the unfiltered question instead: does the catalog
+	* hold a Session no Workspace owns at all? `show` hides no row the row rule
+	* keeps, so it is the widest view the bucket can ever have.
+	*/
+	const hasUnowned = (0, react.useMemo)(() => unownedSessionIds(list, workspaces, main, archived, "", "show").length > 0, [
+		list,
+		workspaces,
+		main,
+		archived
+	]);
+	/**
+	* Whether the archived-only view holds an unowned row at all.
+	*
+	* `unowned` folds the search in, so it cannot answer that: a query matching
+	* no archived row would read as "the archive is empty". This asks the same
+	* derivation with the query cleared.
+	*/
+	const unownedArchived = (0, react.useMemo)(() => unownedSessionIds(list, workspaces, main, archived, "", "only").length > 0, [
+		list,
+		workspaces,
+		main,
+		archived
+	]);
 	const persistExpansion = (0, react.useCallback)((next) => {
 		setExpansion(next);
 		saveExpansion(next);
 	}, []);
 	(0, react.useEffect)(() => {
-		if (!workspaceReady || groups === void 0) return;
+		if (!workspaceReady || !sessionReady || groups === void 0) return;
 		const live = /* @__PURE__ */ new Set();
 		for (const group of groups) live.add(`g:${group.id}`);
 		for (const workspace of workspaces) live.add(`ws:${workspace.workspaceId}`);
+		if (hasUnowned) live.add(UNOWNED_KEY);
 		const next = pruneExpansion(expansion, live);
 		if (next !== expansion) persistExpansion(next);
 	}, [
 		workspaceReady,
+		sessionReady,
 		groups,
 		workspaces,
+		hasUnowned,
 		expansion,
 		persistExpansion
 	]);
@@ -823,8 +924,8 @@ function GroupedBrowser(props) {
 	const visibleOf = (workspaceId) => visibleByWorkspace.get(workspaceId) ?? [];
 	/** The sessions a group-level operation may act on, already derived. */
 	const contentOf = (workspaceId) => contentByWorkspace.get(workspaceId) ?? [];
-	const hasVisibleContent = archivedFilter !== "only" || workspaces.some((workspace) => visibleOf(workspace.workspaceId).length > 0);
-	const hasArchived = workspaces.some((workspace) => workspace.sessionIds.some((sessionId) => sessionShown(list.byId[sessionId], sessionId, main, archived, "only")));
+	const hasVisibleContent = archivedFilter !== "only" || unowned.length > 0 || workspaces.some((workspace) => visibleOf(workspace.workspaceId).length > 0);
+	const hasArchived = unownedArchived || workspaces.some((workspace) => workspace.sessionIds.some((sessionId) => sessionShown(list.byId[sessionId], sessionId, main, archived, "only")));
 	/**
 	* Archive one Session, retrying once through the stop-then-archive path.
 	*
@@ -872,7 +973,14 @@ function GroupedBrowser(props) {
 			y: rect.bottom + 4
 		});
 	};
-	const sessionRow = (sessionId, depth) => {
+	/**
+	* One session row.
+	* @param sessionId - the Session to render.
+	* @param depth - indent level, in 16px steps.
+	* @param level - `aria-level` of the row; sessions sit one step below the node
+	* that lists them, which is a Workspace — or the unowned bucket.
+	*/
+	const sessionRow = (sessionId, depth, level = 3) => {
 		const row = list.byId[sessionId];
 		if (row === void 0) return null;
 		const isBlank = row.blank;
@@ -909,7 +1017,7 @@ function GroupedBrowser(props) {
 			className: `dwo-row dwo-session-row${isArchived ? " archived" : ""}${menu?.rowKey === key ? " menu-open" : ""}`,
 			role: "treeitem",
 			"data-row-key": `session:${sessionId}`,
-			"aria-level": 3,
+			"aria-level": level,
 			"aria-selected": currentSessionId === sessionId,
 			"aria-description": isArchived ? messages.archivedNotOpenable : void 0,
 			style: indent(depth),
@@ -1221,6 +1329,57 @@ function GroupedBrowser(props) {
 			}) : members.map((member) => workspaceRow(member, depth + 1)) })]
 		}, group.id);
 	};
+	/**
+	* The bucket holding Sessions no Workspace accounts for.
+	*
+	* It rests open. A folded bucket would hide exactly the rows it exists to
+	* reveal, and there is no Workspace row above it to open first — the operator
+	* has nothing to click but this header — so the disclosure only ever closes
+	* it on purpose. Search and the archived-only filter force it open like every
+	* other node.
+	* @param ids - the bucket's visible rows, already in render order.
+	* @returns the bucket node, or nothing when it holds no row.
+	*/
+	const unownedNode = (ids) => {
+		if (ids.length === 0) return null;
+		const isOpen = isExpanded(UNOWNED_KEY, true);
+		return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+			className: "dwo-group-node",
+			children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "dwo-row dwo-group-row",
+				role: "treeitem",
+				"data-row-key": "unowned",
+				"aria-level": 1,
+				"aria-expanded": isOpen,
+				style: indent(0),
+				onClick: () => setExpanded(UNOWNED_KEY, !isOpen),
+				onContextMenu: (event) => event.preventDefault(),
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dwo-slot dwo-chev",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: `dwo-arrow${isOpen ? " open" : ""}`,
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconTriangleRightFillRegular, { size: 14 })
+						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dwo-text",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dwo-row-title dwo-group-title",
+							children: messages.ungroupedSessions
+						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dwo-count",
+						children: `${ids.length} ${messages.unitSessions}`
+					})
+				]
+			}), isOpen && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: "dwo-ws-sessions",
+				children: ids.map((id) => sessionRow(id, 1, 2))
+			})]
+		}, UNOWNED_KEY);
+	};
 	const confirmArchiveGroup = async (groupId) => {
 		const group = groups?.find((candidate) => candidate.id === groupId);
 		if (group === void 0) return;
@@ -1255,6 +1414,7 @@ function GroupedBrowser(props) {
 		const next = {};
 		for (const group of groups ?? []) next[`g:${group.id}`] = value;
 		for (const workspace of workspaces) next[`ws:${workspace.workspaceId}`] = value;
+		if (hasUnowned) next[UNOWNED_KEY] = value;
 		persistExpansion(next);
 	};
 	const viewMenu = {
@@ -1412,10 +1572,11 @@ function GroupedBrowser(props) {
 					currentGroups.map((group) => groupNode(group, 0)),
 					currentGroups.length > 0 && ungrouped.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: "dwo-sep",
-						children: messages.ungrouped
+						children: messages.ungroupedWorkspaces
 					}),
 					ungrouped.map((workspace) => workspaceRow(workspace, 0)),
-					currentGroups.length === 0 && ungrouped.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					unownedNode(unowned),
+					currentGroups.length === 0 && ungrouped.length === 0 && unowned.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: "dwo-empty",
 						children: messages.noWorkspaces
 					})
