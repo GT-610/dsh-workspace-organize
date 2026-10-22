@@ -126,6 +126,10 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
 
   const workspaces = workspaceSnapshot.items
   const workspaceReady = workspaceSnapshot.phase === 'ready' && workspaceSnapshot.state !== 'loading'
+  // `pending` is a catalog that has not arrived yet, and an absent row proves
+  // nothing while it is on the way: the phase is monotone, so `ready` is when an
+  // empty `ids` finally means "there truly are none".
+  const sessionReady = list.phase === 'ready'
   const archived = useMemo(
     () => new Set<SessionId>(workspaceSnapshot.archivedSessionIds),
     [workspaceSnapshot.archivedSessionIds],
@@ -270,20 +274,23 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
 
   // A stored disclosure choice outlives the node it describes, so a deleted group
   // or workspace would leave its key in the mirror forever. The tree only knows
-  // the live keys once both snapshots have arrived.
+  // the live keys once both snapshots have arrived — including the session
+  // catalog, whose rows are what make the unowned bucket live at all.
   useEffect(() => {
-    if (!workspaceReady || groups === undefined) return
+    if (!workspaceReady || !sessionReady || groups === undefined) return
     const live = new Set<string>()
     for (const group of groups) live.add(`g:${group.id}`)
     for (const workspace of workspaces) live.add(`ws:${workspace.workspaceId}`)
     // The bucket's key lives as long as the bucket can hold a row, so a search
     // that happens to hide every one of them does not discard the operator's
     // choice; with no unowned Session at all the key is pruned like any other
-    // key whose node is gone.
+    // key whose node is gone. Reading the catalog's own `ready` gate above is
+    // what keeps an unarrived catalog from looking like that absence — and an
+    // empty catalog that *is* ready still prunes.
     if (hasUnowned) live.add(UNOWNED_KEY)
     const next = pruneExpansion(expansion, live)
     if (next !== expansion) persistExpansion(next)
-  }, [workspaceReady, groups, workspaces, hasUnowned, expansion, persistExpansion])
+  }, [workspaceReady, sessionReady, groups, workspaces, hasUnowned, expansion, persistExpansion])
 
   const chooseArchivedFilter = useCallback((next: ArchivedFilter) => {
     setArchivedFilter(next)

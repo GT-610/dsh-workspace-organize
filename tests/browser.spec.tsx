@@ -58,18 +58,23 @@ function fakeServices() {
   } satisfies Services
 }
 
-/** Props for one mount: real hooks, fake snapshots, recorded operations. */
+/**
+ * Props for one mount: real hooks, fake snapshots, recorded operations.
+ * @param listPhase - arrival lifecycle of the session catalog; `pending` is an
+ * empty catalog that has not arrived rather than one that is empty in fact.
+ */
 function propsFor(
   workspaces: readonly WorkspaceView[],
   sessions: readonly SessionSummary[],
   services: Services,
   statuses: SessionStatusSnapshot = new Map(),
   archived: readonly string[] = [],
+  listPhase: SessionListState['phase'] = 'ready',
 ): OrganizeBrowserProps {
   const list = {
     ids: sessions.map(row => row.id),
     byId: Object.fromEntries(sessions.map(row => [row.id, row])),
-    phase: 'ready',
+    phase: listPhase,
   } as unknown as SessionListState
   const workspaceSnapshot = {
     items: workspaces,
@@ -297,6 +302,16 @@ describe('GroupedBrowser unowned bucket', () => {
     mountUnowned(fakeServices(), [])
     await screen.findByText('Work')
     await waitFor(() => { expect(storedExpansion()['u:unowned']).toBeUndefined() })
+  })
+
+  it('waits for the session catalog before pruning', async () => {
+    // A `pending` catalog is empty because it has not arrived, not because there
+    // is nothing in it: pruning on it would drop a bucket choice a moment before
+    // the rows that justify it show up.
+    localStorage.setItem('workspaceOrganize.expansion', JSON.stringify({ 'u:unowned': false }))
+    render(<GroupedBrowser {...propsFor([workspaceView('repo', [])], [], fakeServices(), new Map(), [], 'pending')} />)
+    await screen.findByText('Work')
+    expect(storedExpansion()['u:unowned']).toBe(false)
   })
 
   it('reports no workspaces only when nothing at all would render', async () => {
