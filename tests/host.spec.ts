@@ -20,11 +20,17 @@ function request(headers: Record<string, string>): IncomingMessage {
   return { headers } as unknown as IncomingMessage
 }
 
-/** A request double: a stream of `data` events with a body, and a `destroy`. */
+/** A request double: a stream of `data` events with a body, and its controls. */
 class RequestStream extends EventEmitter {
+  paused = false
   destroyed = false
 
-  /** Record the destroy the route performs when it refuses a body. */
+  /** Record the flow stop the reader performs when it refuses a body. */
+  pause(): void {
+    this.paused = true
+  }
+
+  /** Record the close the route performs once it has answered. */
   destroy(): void {
     this.destroyed = true
   }
@@ -73,14 +79,16 @@ describe('readBody', () => {
     expect(req.destroyed).toBe(false)
   })
 
-  it('refuses a body past the cap and drops the connection', async () => {
+  it('refuses a body past the cap and stops reading it', async () => {
     const req = new RequestStream()
     const pending = readBody(req as unknown as IncomingMessage)
     req.emit('data', Buffer.alloc(MAX_DOCUMENT_BYTES + 1))
     await expect(pending).rejects.toThrow('body too large')
-    // The body is abandoned, not buffered: the socket is the only thing left to
-    // close, and the route answers before this point.
-    expect(req.destroyed).toBe(true)
+    // The upload stops, but the connection stays open: the route answers 413 on
+    // this socket and closes it once that answer is out, which it could not do on
+    // a connection the reader had already destroyed.
+    expect(req.paused).toBe(true)
+    expect(req.destroyed).toBe(false)
   })
 
   it('takes a body of exactly the cap', async () => {

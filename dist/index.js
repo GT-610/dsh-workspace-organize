@@ -141,9 +141,15 @@ function sameOriginWrite(req) {
 }
 /**
 * Read one request body with the byte cap.
+*
+* An oversize body stops the read and leaves the request paused rather than
+* destroyed: the route answers `413` on that same socket and closes it once the
+* answer is out, which it could not do on a connection this function had already
+* torn down.
 * @param req - incoming request.
 * @returns the decoded body.
-* @throws when the body exceeds {@link MAX_DOCUMENT_BYTES}.
+* @throws when the body exceeds {@link MAX_DOCUMENT_BYTES}; the caller owns the
+* connection from then on.
 */
 function readBody(req) {
 	return new Promise((resolve, reject) => {
@@ -155,8 +161,8 @@ function readBody(req) {
 			size += chunk.length;
 			if (size > 2097152) {
 				refused = true;
+				req.pause();
 				reject(/* @__PURE__ */ new Error("body too large"));
-				req.destroy();
 				return;
 			}
 			chunks.push(chunk);
@@ -232,6 +238,8 @@ function apply(ctx) {
 			try {
 				body = await readBody(req);
 			} catch {
+				res.setHeader("connection", "close");
+				res.once("finish", () => req.destroy());
 				reply(413, { error: "body too large" });
 				return;
 			}

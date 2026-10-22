@@ -757,7 +757,17 @@ function GroupedBrowser(props) {
 	const [dialog, setDialog] = (0, react.useState)(void 0);
 	const [busy, setBusy] = (0, react.useState)(false);
 	const [hostSaved, setHostSaved] = (0, react.useState)(true);
-	const saveSeq = (0, react.useRef)(0);
+	/**
+	* The client's write chain: each save starts after the previous one settles.
+	*
+	* The Host serializes the writes it receives in arrival order, which is not the
+	* order the operator made the edits: two POSTs racing each other can commit an
+	* older document last, and a version-stamped document does not exist to reject
+	* the stale one. Issuing one save at a time is what makes the stored document
+	* the newest edit rather than whichever request won the race — and because the
+	* answers then arrive in edit order, the last one is the state to show.
+	*/
+	const writeTail = (0, react.useRef)(Promise.resolve(true));
 	const [now, setNow] = (0, react.useState)(() => Date.now());
 	(0, react.useEffect)(() => {
 		let live = true;
@@ -775,12 +785,13 @@ function GroupedBrowser(props) {
 	const persist = (0, react.useCallback)((next) => {
 		setGroups(next);
 		setHostSaved(false);
-		const seq = ++saveSeq.current;
-		saveGroupDocument({
+		const run = writeTail.current.then(() => saveGroupDocument({
 			version: 1,
 			groups: next
-		}).then((ok) => {
-			if (seq === saveSeq.current) setHostSaved(ok);
+		}));
+		writeTail.current = run;
+		run.then((ok) => {
+			if (writeTail.current === run) setHostSaved(ok);
 		});
 	}, []);
 	/**

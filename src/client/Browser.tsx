@@ -147,10 +147,17 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const [dialog, setDialog] = useState<Dialog | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [hostSaved, setHostSaved] = useState(true)
-  // Saves are numbered, so the indicator follows the *last* save rather than
-  // whichever answered last: two quick edits can answer out of order, and an
-  // older answer must not report the newer write's outcome.
-  const saveSeq = useRef(0)
+  /**
+   * The client's write chain: each save starts after the previous one settles.
+   *
+   * The Host serializes the writes it receives in arrival order, which is not the
+   * order the operator made the edits: two POSTs racing each other can commit an
+   * older document last, and a version-stamped document does not exist to reject
+   * the stale one. Issuing one save at a time is what makes the stored document
+   * the newest edit rather than whichever request won the race — and because the
+   * answers then arrive in edit order, the last one is the state to show.
+   */
+  const writeTail = useRef<Promise<boolean>>(Promise.resolve(true))
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -170,9 +177,13 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const persist = useCallback((next: WorkspaceGroup[]) => {
     setGroups(next)
     setHostSaved(false)
-    const seq = ++saveSeq.current
-    void saveGroupDocument({ version: 1, groups: next }).then((ok) => {
-      if (seq === saveSeq.current) setHostSaved(ok)
+    const run = writeTail.current.then(() => saveGroupDocument({ version: 1, groups: next }))
+    writeTail.current = run
+    // Only the newest queued save reports: an earlier answer says nothing about
+    // the edit still waiting behind it, and clearing the indicator on it would
+    // claim a write that has not happened yet.
+    void run.then((ok) => {
+      if (writeTail.current === run) setHostSaved(ok)
     })
   }, [])
 

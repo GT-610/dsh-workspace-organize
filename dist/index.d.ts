@@ -27,9 +27,15 @@ declare function resolveDshHome(env?: Readonly<Record<string, string | undefined
 declare function sameOriginWrite(req: IncomingMessage): boolean;
 /**
  * Read one request body with the byte cap.
+ *
+ * An oversize body stops the read and leaves the request paused rather than
+ * destroyed: the route answers `413` on that same socket and closes it once the
+ * answer is out, which it could not do on a connection this function had already
+ * torn down.
  * @param req - incoming request.
  * @returns the decoded body.
- * @throws when the body exceeds {@link MAX_DOCUMENT_BYTES}.
+ * @throws when the body exceeds {@link MAX_DOCUMENT_BYTES}; the caller owns the
+ * connection from then on.
  */
 declare function readBody(req: IncomingMessage): Promise<string>;
 /**

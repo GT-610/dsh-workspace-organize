@@ -621,30 +621,76 @@ describe('GroupedBrowser archived rows', () => {
   })
 })
 
-describe('GroupedBrowser save indicator', () => {
-  it('follows the last save when two answer out of order', async () => {
-    // Each write is held until the test settles it, so the older one can answer
-    // after the newer one — the order the indicator must not trust.
-    const settles: Array<(ok: boolean) => void> = []
-    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
-      if (init?.method !== 'POST') {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ version: 1, groups: [{ id: 'g1', name: 'Work', workspaceIds: ['repo'] }] }),
-        })
-      }
-      return new Promise((resolve) => { settles.push(ok => resolve({ ok })) })
-    }))
+/**
+ * A `fetch` double whose writes are held until the test settles them.
+ *
+ * The GET the browser opens with answers directly; each POST is recorded and left
+ * pending, so a test can decide the order the Host answers in — and see whether
+ * the client got that far at all.
+ * @returns the write bodies in issue order, and one settle function per write.
+ */
+function heldWrites() {
+  const bodies: string[] = []
+  const settles: Array<(ok: boolean) => void> = []
+  vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+    if (init?.method !== 'POST') {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ version: 1, groups: [{ id: 'g1', name: 'Work', workspaceIds: ['repo'] }] }),
+      })
+    }
+    bodies.push(String(init.body))
+    return new Promise((resolve) => { settles.push(ok => resolve({ ok })) })
+  }))
+  return { bodies, settles }
+}
+
+/** The group names of the writes issued so far, newest group of each document. */
+function writeNames(bodies: readonly string[]): Array<string | undefined> {
+  return bodies.map((body) => {
+    const doc = JSON.parse(body) as { groups: Array<{ name: string }> }
+    return doc.groups.at(-1)?.name
+  })
+}
+
+describe('GroupedBrowser saves', () => {
+  it('issues one write at a time, in the order the edits were made', async () => {
+    // The Host serializes by arrival, not by edit order, so two POSTs racing each
+    // other can commit an older document last. The second edit must wait.
+    const { bodies, settles } = heldWrites()
     mountBrowser()
     await screen.findByText('Work')
     await createGroup('First')
     await createGroup('Second')
-    expect(settles).toHaveLength(2)
-    // The newer write fails, and that is the outcome on screen.
-    await act(async () => { settles[1]?.(false) })
-    await waitFor(() => { expect(document.querySelector('.dwo-saving')).not.toBeNull() })
-    // The older write then succeeds; it must not claim the newer one's result.
+    expect(settles).toHaveLength(1)
     await act(async () => { settles[0]?.(true) })
+    await waitFor(() => { expect(settles).toHaveLength(2) })
+    expect(writeNames(bodies)).toEqual(['First', 'Second'])
+  })
+
+  it('stops saying "saving" only when the last write answers', async () => {
+    const { settles } = heldWrites()
+    mountBrowser()
+    await screen.findByText('Work')
+    await createGroup('First')
+    await createGroup('Second')
+    // The first answer says nothing about the edit still waiting behind it.
+    await act(async () => { settles[0]?.(true) })
+    await waitFor(() => { expect(settles).toHaveLength(2) })
+    expect(document.querySelector('.dwo-saving')).not.toBeNull()
+    await act(async () => { settles[1]?.(true) })
+    await waitFor(() => { expect(document.querySelector('.dwo-saving')).toBeNull() })
+  })
+
+  it('keeps saying "saving" when the last write fails', async () => {
+    const { settles } = heldWrites()
+    mountBrowser()
+    await screen.findByText('Work')
+    await createGroup('First')
+    await createGroup('Second')
+    await act(async () => { settles[0]?.(true) })
+    await waitFor(() => { expect(settles).toHaveLength(2) })
+    await act(async () => { settles[1]?.(false) })
     await waitFor(() => { expect(document.querySelector('.dwo-saving')).not.toBeNull() })
   })
 })

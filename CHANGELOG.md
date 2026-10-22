@@ -24,17 +24,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   counts and the bulk operations cannot disagree about it again.
 - A refused restore is reported the way a refused archive is, instead of
   surfacing as an unhandled rejection.
-- The save indicator follows the last save rather than the last answer. Two
-  quick edits can answer out of order, and the older answer used to overwrite
-  the newer write's outcome.
+- Group-document writes are queued in edit order. The Host serializes the writes it
+  receives by arrival, not by the order the edits were made, so two POSTs racing
+  each other could commit an older document last while the tree reported the newer
+  one saved. Saves now run one at a time through a client-side chain, and the save
+  indicator follows the newest queued write rather than whichever answered last.
 - `$DSH_HOME` is resolved the way the rest of the Host resolves it: a blank
   override counts as unset, `~/…` expands against the OS home, and the result is
   absolute. A raw read put this plugin's document under the process cwd (or a
   directory literally named `~`) while every other DSH component kept reading
   `~/.dsh`, where the tree then looked empty.
 - An oversized write body is answered `413` and a malformed one `400`. Both used
-  to answer `400 invalid json body`, blaming the JSON for the byte cap; the
-  reader also stops buffering the rest of a body it has already refused.
+  to answer `400 invalid json body`, blaming the JSON for the byte cap. The reader
+  stops the upload but leaves the socket open, so that answer can actually reach
+  the caller; the connection closes once it has gone out.
 - A group name cannot be typed past the document's own cap. The field carries
   `maxLength`, so a name the Host would reject as an invalid document — which
   the Client could only show as a save that never settles — is out of reach.

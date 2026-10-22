@@ -89,25 +89,31 @@ export function sameOriginWrite(req: IncomingMessage): boolean {
 
 /**
  * Read one request body with the byte cap.
+ *
+ * An oversize body stops the read and leaves the request paused rather than
+ * destroyed: the route answers `413` on that same socket and closes it once the
+ * answer is out, which it could not do on a connection this function had already
+ * torn down.
  * @param req - incoming request.
  * @returns the decoded body.
- * @throws when the body exceeds {@link MAX_DOCUMENT_BYTES}.
+ * @throws when the body exceeds {@link MAX_DOCUMENT_BYTES}; the caller owns the
+ * connection from then on.
  */
 export function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let size = 0
-    // `destroy` takes effect asynchronously, so `data` still fires for the
-    // chunks already in flight. Without this flag those would keep growing
-    // `chunks` for a body the route has already refused.
+    // `pause` takes effect after the chunks already in flight, so `data` can still
+    // fire for a body that has been refused; without this flag those would keep
+    // growing `chunks`.
     let refused = false
     req.on('data', (chunk: Buffer) => {
       if (refused) return
       size += chunk.length
       if (size > MAX_DOCUMENT_BYTES) {
         refused = true
+        req.pause()
         reject(new Error('body too large'))
-        req.destroy()
         return
       }
       chunks.push(chunk)
@@ -196,6 +202,11 @@ export function apply(ctx: Context): (() => void) | undefined {
       } catch {
         // The byte cap is the only reason a read rejects, and that body was
         // abandoned unparsed: an oversize request is a 413, never a malformed one.
+        // The reader left the upload paused instead of closing the connection, so
+        // this answer can still reach the caller; the socket goes after it, at
+        // which point the rest of the body is no longer worth reading.
+        res.setHeader('connection', 'close')
+        res.once('finish', () => req.destroy())
         reply(413, { error: 'body too large' })
         return
       }
