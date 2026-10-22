@@ -45,6 +45,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rendering it under both headings.
 - A stored expand/collapse choice no longer outlives its node: deleting a group
   or a workspace used to leave its key in the browser mirror forever.
+- Sessions that no Workspace accounts for have a row again. A Workspace owns its
+  sessions through its own member list, so a Session whose Workspace
+  registration was deleted — or one started with no Workspace at all — is in no
+  account. The shipped sidebar trails exactly those rows in its own `Ungrouped`
+  bucket (`groupByWorkspace` in ui-workspace's `tree.ts`), and shadowing that
+  sidebar removed the bucket with it: such a Session still ran, opened and
+  archived, yet the tree had no row for it. The plugin now derives the same
+  bucket — newest first with the retained placeholder leading, archived rows
+  trailing live ones under the current archive filter, spent drafts out, search
+  applied — and renders it below the ungrouped Workspaces. It rests open,
+  because a folded bucket would hide the very rows it exists to reveal.
 
 ### Changed
 
@@ -58,6 +69,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   A request outside it fails at runtime, where the sidebar silently falls back
   to the shipped browser; nothing else in CI read the emitted artifact.
 - The READMEs say search matches session titles, not message content.
+- The label over ungrouped Workspaces reads "Ungrouped workspaces", and the bare
+  "Ungrouped" now names the session bucket below them, as it does in the shipped
+  sidebar.
 
 ## [0.1.0] - 2026-10-19
 

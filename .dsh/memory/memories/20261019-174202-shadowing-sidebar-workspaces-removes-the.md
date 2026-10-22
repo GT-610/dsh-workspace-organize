@@ -2,8 +2,8 @@
 id: 20261019-174202-shadowing-sidebar-workspaces-removes-the
 scope: project
 path: src/client
-saved_at: 2026-10-20T01:29:24.303Z
-tags: dsh-plugin, slots, sidebar, archived, gotcha, reload, client-plugin
+saved_at: 2026-10-22T10:05:00.000Z
+tags: dsh-plugin, slots, sidebar, archived, sessions, gotcha, reload, client-plugin
 ---
 
 # Shadowing sidebar.workspaces removes the official UI's escap
@@ -21,6 +21,16 @@ The concrete bug this caused (fixed on branch `fix/archive-flow`): `sessionShown
 - `sessionVisible()` applies the archive filter *last*, so the retained blank placeholder survives `default` and `show` but drops out of `only`.
 - `visibleSessionIds` = placeholder first, then live rows, then archived rows (where `reconcileManualOrder` parks them).
 - Group roll-ups and group-level bulk actions must exclude archived rows even while the filter displays them, or the confirmation count and the operation disagrees.
+
+## The same lesson, one layer out: the derivation itself was missing
+
+A shadowing entry deletes the shipped browser's **derivations**, not only its markup and its controls. The second instance of this (branch `fix/ungrouped-sessions`): `groupByWorkspace` in ui-workspace's `tree.ts` ends with a group keyed `UNGROUPED_KEY === ""` holding every Session in `list.ids` that no `workspace.sessionIds` accounts for. This plugin enumerated only `workspaces -> sessionIds`, so those Sessions had no row at all — they still ran, opened and archived, they were simply invisible. Measured in the tauri profile on 2026-10-22: **30 visible unowned Sessions against 2 workspace-owned ones**, i.e. most of the tree was missing.
+
+**When that population is non-empty:** deleting a Workspace through the group menu leaves its Sessions unowned (the shipped delete dialog promises "Its sessions will appear under Ungrouped"), and DSH also creates Sessions with cwd `$DSH_HOME/ungrouped`, which no Workspace registers.
+
+**The ported rule** (`unownedSessionIds` in `src/client/select.ts`): catalog ids minus every workspace's members, through `sessionShown` (so spent blanks and the archive filter behave exactly as elsewhere), query matched on `displayTitle` and never on a blank, newest-first by `updatedAt` with Session id as the tie-break, then the same partitions a workspace listing uses (placeholder first, archived last). Rendered as a top-level bucket that rests **open** — a folded bucket would hide the rows it exists to reveal.
+
+**Check the whole population, not just the rows you remember.** Grep the shipped bundle for the surface's projection function and diff its inputs against yours: `list.ids` vs `workspaces[].sessionIds` was the entire bug.
 
 ## Client vs Host reload asymmetry (cost me a wrong "verified" call)
 

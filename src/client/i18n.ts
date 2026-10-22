@@ -27,7 +27,8 @@ export interface Messages {
   closeSearch: string
   // List
   newGroup: string
-  ungrouped: string
+  ungroupedWorkspaces: string
+  ungroupedSessions: string
   loading: string
   noWorkspaces: string
   noSessions: string
@@ -57,6 +58,7 @@ export interface Messages {
   moveToGroup: string
   ungroup: string
   unitWorkspaces: string
+  unitSessions: string
   unitRunning: string
   unitPending: string
   statusApproval: string
@@ -92,7 +94,8 @@ const EN: Messages = {
   search: 'Search sessions',
   closeSearch: 'Close search',
   newGroup: 'New group',
-  ungrouped: 'Ungrouped',
+  ungroupedWorkspaces: 'Ungrouped workspaces',
+  ungroupedSessions: 'Ungrouped sessions',
   loading: 'Loading…',
   noWorkspaces: 'No workspaces yet',
   noSessions: 'No sessions',
@@ -120,6 +123,7 @@ const EN: Messages = {
   moveToGroup: 'Move to group',
   ungroup: 'Ungroup (keep workspaces)',
   unitWorkspaces: 'workspaces',
+  unitSessions: 'sessions',
   unitRunning: 'running',
   unitPending: 'waiting',
   statusApproval: 'Approval',
@@ -153,7 +157,8 @@ const ZH: Messages = {
   search: '搜索会话',
   closeSearch: '关闭搜索',
   newGroup: '新建分组',
-  ungrouped: '未分组',
+  ungroupedWorkspaces: '未分组的工作区',
+  ungroupedSessions: '未分组的会话',
   loading: '加载中…',
   noWorkspaces: '暂无工作区',
   noSessions: '暂无会话',
@@ -181,6 +186,7 @@ const ZH: Messages = {
   moveToGroup: '移入分组',
   ungroup: '解散分组(保留工作区)',
   unitWorkspaces: '工作区',
+  unitSessions: '会话',
   unitRunning: '运行中',
   unitPending: '待处理',
   statusApproval: '待审批',

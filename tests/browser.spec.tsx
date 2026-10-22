@@ -58,18 +58,23 @@ function fakeServices() {
   } satisfies Services
 }
 
-/** Props for one mount: real hooks, fake snapshots, recorded operations. */
+/**
+ * Props for one mount: real hooks, fake snapshots, recorded operations.
+ * @param listPhase - arrival lifecycle of the session catalog; `pending` is an
+ * empty catalog that has not arrived rather than one that is empty in fact.
+ */
 function propsFor(
   workspaces: readonly WorkspaceView[],
   sessions: readonly SessionSummary[],
   services: Services,
   statuses: SessionStatusSnapshot = new Map(),
   archived: readonly string[] = [],
+  listPhase: SessionListState['phase'] = 'ready',
 ): OrganizeBrowserProps {
   const list = {
     ids: sessions.map(row => row.id),
     byId: Object.fromEntries(sessions.map(row => [row.id, row])),
-    phase: 'ready',
+    phase: listPhase,
   } as unknown as SessionListState
   const workspaceSnapshot = {
     items: workspaces,
@@ -171,6 +176,156 @@ describe('GroupedBrowser rows', () => {
     expect(count?.textContent).toContain(`1 ${messages.unitWorkspaces}`)
     expect(count?.textContent).toContain(`1 ${messages.unitRunning}`)
     expect(count?.querySelector('[data-state-dot="ongoing"]')).not.toBeNull()
+  })
+})
+
+/**
+ * A catalog whose only Workspace owns one Session, while further Sessions
+ * belong to no Workspace at all — the shipped browser's Ungrouped bucket.
+ * @param services - the operations the mount should reach.
+ * @param extra - Sessions to place in the catalog outside every Workspace.
+ * @param archived - archive-set members.
+ * @returns the mount and its recorded operations.
+ */
+function mountUnowned(
+  services: Services = fakeServices(),
+  extra: readonly SessionSummary[] = [sessionRow('loose', { displayTitle: 'Loose conversation' })],
+  archived: readonly string[] = [],
+) {
+  const named = sessionRow('named')
+  const repo = workspaceView('repo', ['named'])
+  const view = render(
+    <GroupedBrowser {...propsFor([repo], [named, ...extra], services, new Map(), archived)} />,
+  )
+  return { view, services }
+}
+
+/** The unowned bucket's node, found by its header row. */
+function bucket(): Element | null | undefined {
+  return document.querySelector('[data-row-key="unowned"]')?.parentElement
+}
+
+/** The stored disclosure choices, as the mirror holds them. */
+function storedExpansion(): Record<string, boolean> {
+  return JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
+}
+
+describe('GroupedBrowser unowned bucket', () => {
+  it('renders a session no workspace owns, with no workspace row to reach it through', async () => {
+    mountUnowned()
+    expect(await screen.findByText(messages.ungroupedSessions)).toBeDefined()
+    const row = document.querySelector('[data-row-key="session:loose"]')
+    expect(row).not.toBeNull()
+    expect(row?.textContent).toContain('Loose conversation')
+    // The bucket counts what it holds, so a folded bucket still says it is there.
+    expect(bucket()?.querySelector('.dwo-count')?.textContent).toContain(`1 ${messages.unitSessions}`)
+  })
+
+  it('lists only the sessions no workspace accounts for', async () => {
+    mountUnowned()
+    await screen.findByText(messages.ungroupedSessions)
+    const rows = bucket()?.querySelectorAll('.dwo-session-row') ?? []
+    expect(rows).toHaveLength(1)
+    expect(bucket()?.querySelector('[data-row-key="session:named"]')).toBeNull()
+  })
+
+  it('opens an unowned session when its row is clicked', async () => {
+    const { services } = mountUnowned()
+    const row = await screen.findByText('Loose conversation')
+    await userEvent.click(row)
+    expect(services.openSession).toHaveBeenCalledWith('loose')
+  })
+
+  it('keeps a spent draft out of the bucket', async () => {
+    mountUnowned(fakeServices(), [sessionRow('loose'), sessionRow('spent-draft', { blank: true })])
+    await screen.findByText(messages.ungroupedSessions)
+    expect(bucket()?.querySelector('[data-row-key="session:loose"]')).not.toBeNull()
+    expect(bucket()?.querySelector('[data-row-key="session:spent-draft"]')).toBeNull()
+  })
+
+  it('follows the archived filter', async () => {
+    mountUnowned(
+      fakeServices(),
+      [sessionRow('loose'), sessionRow('archived-loose')],
+      ['archived-loose'],
+    )
+    await screen.findByText(messages.ungroupedSessions)
+    expect(bucket()?.querySelector('[data-row-key="session:archived-loose"]')).toBeNull()
+    await chooseViewOption(messages.showArchived)
+    expect(bucket()?.querySelector('[data-row-key="session:archived-loose"]')).not.toBeNull()
+    await chooseViewOption(messages.onlyArchived)
+    expect(bucket()?.querySelector('[data-row-key="session:loose"]')).toBeNull()
+    expect(bucket()?.querySelector('[data-row-key="session:archived-loose"]')).not.toBeNull()
+  })
+
+  it('counts an unowned archived row as content under the archived-only filter', async () => {
+    mountUnowned(fakeServices(), [sessionRow('archived-loose')], ['archived-loose'])
+    await chooseViewOption(messages.onlyArchived)
+    await screen.findByText(messages.ungroupedSessions)
+    expect(document.querySelector('[data-row-key="session:archived-loose"]')).not.toBeNull()
+    expect(screen.queryByText(messages.archivedOnlyEmpty)).toBeNull()
+  })
+
+  it('folds away when its header is clicked, and remembers the choice', async () => {
+    mountUnowned()
+    const header = await screen.findByText(messages.ungroupedSessions)
+    expect(document.querySelector('[data-row-key="session:loose"]')).not.toBeNull()
+    await userEvent.click(header)
+    await waitFor(() => {
+      expect(document.querySelector('[data-row-key="session:loose"]')).toBeNull()
+    })
+    // The bucket's key belongs to no workspace, so it is its own disclosure slot.
+    const stored = JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
+    expect(stored['u:unowned']).toBe(false)
+  })
+
+  it('keeps its fold choice while a search hides every row of it', async () => {
+    mountUnowned()
+    await userEvent.click(await screen.findByText(messages.ungroupedSessions))
+    await waitFor(() => { expect(storedExpansion()['u:unowned']).toBe(false) })
+    // A query that matches nothing in the bucket: the bucket leaves the tree,
+    // but it still has rows to come back to, so pruning must not read the
+    // filtered derivation and throw the choice away.
+    await userEvent.click(document.querySelector('.dwo-search-btn') as HTMLElement)
+    await userEvent.type(document.querySelector('.dwo-search-input') as HTMLInputElement, 'nothing-matches')
+    await waitFor(() => { expect(document.querySelector('[data-row-key="unowned"]')).toBeNull() })
+    expect(storedExpansion()['u:unowned']).toBe(false)
+    // Clearing the search brings the bucket back the way the operator left it.
+    await userEvent.clear(document.querySelector('.dwo-search-input') as HTMLInputElement)
+    await screen.findByText(messages.ungroupedSessions)
+    expect(bucket()?.querySelector('[data-row-key="unowned"]')?.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('drops the fold choice once no unowned session is left', async () => {
+    // The bucket is gone for good here, so its key is stale like any other.
+    localStorage.setItem('workspaceOrganize.expansion', JSON.stringify({ 'u:unowned': false }))
+    mountUnowned(fakeServices(), [])
+    await screen.findByText('Work')
+    await waitFor(() => { expect(storedExpansion()['u:unowned']).toBeUndefined() })
+  })
+
+  it('waits for the session catalog before pruning', async () => {
+    // A `pending` catalog is empty because it has not arrived, not because there
+    // is nothing in it: pruning on it would drop a bucket choice a moment before
+    // the rows that justify it show up.
+    localStorage.setItem('workspaceOrganize.expansion', JSON.stringify({ 'u:unowned': false }))
+    render(<GroupedBrowser {...propsFor([workspaceView('repo', [])], [], fakeServices(), new Map(), [], 'pending')} />)
+    await screen.findByText('Work')
+    expect(storedExpansion()['u:unowned']).toBe(false)
+  })
+
+  it('reports no workspaces only when nothing at all would render', async () => {
+    // No groups in the document, so every Workspace — including the unowned
+    // bucket — is judged on its own.
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ version: 1, groups: [] }) })))
+    const view = render(<GroupedBrowser {...propsFor([], [], fakeServices())} />)
+    await waitFor(() => { expect(screen.getByText(messages.noWorkspaces)).toBeDefined() })
+    view.unmount()
+    // A loose session is a row even with no Workspace at all, so the empty state
+    // must not claim the tree is empty.
+    render(<GroupedBrowser {...propsFor([], [sessionRow('loose')], fakeServices())} />)
+    await screen.findByText(messages.ungroupedSessions)
+    expect(screen.queryByText(messages.noWorkspaces)).toBeNull()
   })
 })
 
