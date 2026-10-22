@@ -33,8 +33,8 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
-import type { WorkspaceGroup } from '../shared/contract.ts'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { MAX_GROUP_NAME_LENGTH, type WorkspaceGroup } from '../shared/contract.ts'
 import type { OrganizeBrowserProps } from './contract.ts'
 import { asWorkspaceId } from './contract.ts'
 import {
@@ -147,6 +147,10 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const [dialog, setDialog] = useState<Dialog | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [hostSaved, setHostSaved] = useState(true)
+  // Saves are numbered, so the indicator follows the *last* save rather than
+  // whichever answered last: two quick edits can answer out of order, and an
+  // older answer must not report the newer write's outcome.
+  const saveSeq = useRef(0)
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -166,10 +170,21 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const persist = useCallback((next: WorkspaceGroup[]) => {
     setGroups(next)
     setHostSaved(false)
-    void saveGroupDocument({ version: 1, groups: next }).then(ok => setHostSaved(ok))
+    const seq = ++saveSeq.current
+    void saveGroupDocument({ version: 1, groups: next }).then((ok) => {
+      if (seq === saveSeq.current) setHostSaved(ok)
+    })
   }, [])
 
-  // Workspace deletions elsewhere remove ids from the group document too.
+  /**
+   * Drop members whose Workspace no longer exists.
+   *
+   * The tree drops them in memory and this effect does not write: it runs off a
+   * snapshot the operator did not edit, and the Host copy is what a reload reads
+   * back, so an automatic write here would race every deliberate edit. The stale
+   * ids therefore stay in the stored document until the next edit, which
+   * persists the list this effect has already pruned.
+   */
   useEffect(() => {
     if (!workspaceReady || groups === undefined) return
     const known = new Set<string>(workspaces.map(workspace => workspace.workspaceId))
@@ -219,6 +234,25 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     }
     return out
   }, [currentGroups, workspaces])
+
+  /**
+   * Move one Workspace into a group, whichever group held it before.
+   *
+   * One pass over the document, so the destination and the source cannot both
+   * claim the Workspace, and every candidate destination shares this one
+   * implementation instead of rebuilding the document per submenu row.
+   * @param workspaceId - the Workspace to move.
+   * @param targetGroupId - the group that should list it.
+   */
+  const moveWorkspace = useCallback((workspaceId: string, targetGroupId: string): void => {
+    persist(currentGroups.map(group => ({
+      ...group,
+      workspaceIds: [
+        ...group.workspaceIds.filter(id => id !== workspaceId),
+        ...(group.id === targetGroupId ? [workspaceId] : []),
+      ],
+    })))
+  }, [currentGroups, persist])
 
   // The session the main view currently retains. A docked panel takes focus
   // away, so the active-folder tint drops while one is open; blank-row
@@ -396,6 +430,19 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   }
 
   /**
+   * Restore one Session from the archive.
+   *
+   * The same shape as {@link archiveOne} because the two verbs sit in the same
+   * row and fail the same way: the Host can refuse either, and a rejection left
+   * unhandled would surface as an unhandled rejection instead of a report.
+   * @param sessionId - the Session to restore.
+   */
+  const restoreOne = (sessionId: SessionId): void => {
+    void services.unarchiveSession(sessionId)
+      .catch(error => console.warn('workspace-organize: restore refused', sessionId, error))
+  }
+
+  /**
    * Open a row menu at a viewport point.
    *
    * The gesture is claimed on `contextmenu`, never on mousedown, so that it
@@ -450,7 +497,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       ],
       actions: {
         archive: () => archiveOne(sessionId),
-        unarchive: () => { void services.unarchiveSession(sessionId) },
+        unarchive: () => restoreOne(sessionId),
         rename: () => setDialog({ kind: 'renameSession', sessionId, current: row.displayTitle }),
       },
     })
@@ -491,7 +538,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
                 className="dwo-act-btn"
                 onClick={(event) => {
                   event.stopPropagation()
-                  if (isArchived) void services.unarchiveSession(sessionId)
+                  if (isArchived) restoreOne(sessionId)
                   else archiveOne(sessionId)
                 }}
               >
@@ -511,6 +558,10 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     // opens, which is the shipped browser's own resting shape.
     const isOpen = isExpanded(key, workspace.workspaceId === activeWorkspaceId)
     const others = destinationsByWorkspace.get(workspace.workspaceId) ?? []
+    // Only a grouped Workspace can leave a group. Offering the entry on an
+    // ungrouped row would name an operation that cannot change anything: the
+    // Workspace is in no group to be removed from.
+    const grouped = groupedIds.has(workspace.workspaceId)
     const spec = (): MenuSpec => {
       const items: MenuItem[] = [
         { id: 'rename', label: messages.renameWorkspace, icon: <IconEditOutlineRegular /> },
@@ -524,10 +575,10 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           submenu: others.map(group => ({ id: `move:${group.id}`, label: group.name })),
         })
       }
-      items.push(
-        { id: 'remove', label: messages.removeFromGroup, icon: <IconFolderOpenOutlineRegular /> },
-        { id: 'delete', label: messages.deleteWorkspace, icon: <IconTrashOutlineRegular />, danger: true },
-      )
+      if (grouped) {
+        items.push({ id: 'remove', label: messages.removeFromGroup, icon: <IconFolderOpenOutlineRegular /> })
+      }
+      items.push({ id: 'delete', label: messages.deleteWorkspace, icon: <IconTrashOutlineRegular />, danger: true })
       const actions: Record<string, () => void> = {
         rename: () => setDialog({ kind: 'renameWorkspace', workspaceId: workspace.workspaceId, current: workspace.title }),
         newSession: () => services.startSession(workspace.workspaceId),
@@ -539,13 +590,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       }
       // One entry per candidate group, addressed by the submenu row id.
       for (const target of others) {
-        actions[`move:${target.id}`] = () => persist(currentGroups.map(group => ({
-          ...group,
-          workspaceIds: [
-            ...group.workspaceIds.filter(id => id !== workspace.workspaceId),
-            ...(group.id === target.id ? [workspace.workspaceId] : []),
-          ],
-        })))
+        actions[`move:${target.id}`] = () => moveWorkspace(workspace.workspaceId, target.id)
       }
       return { items, actions }
     }
@@ -1059,6 +1104,7 @@ function DialogHost({ dialog, busy, close, submit }: {
           value={name}
           placeholder={dialogFieldLabel(dialog)}
           aria-label={dialogFieldLabel(dialog)}
+          maxLength={dialogNameLimit(dialog)}
           data-modal-autofocus
           onChange={event => setName(event.target.value)}
         />
@@ -1073,6 +1119,24 @@ function dialogNeedsName(dialog: Dialog): boolean {
     || dialog.kind === 'renameGroup'
     || dialog.kind === 'renameWorkspace'
     || dialog.kind === 'renameSession'
+}
+
+/**
+ * The character cap of one dialog's name field, when the field has one.
+ *
+ * A group name is bounded by the group document, which the Host validates whole:
+ * one name past {@link MAX_GROUP_NAME_LENGTH} and every save of that document is
+ * refused as an invalid document, which the Client can only show as a save that
+ * never settles. Capping the field keeps that state unreachable. A Workspace or
+ * Session title belongs to its own controller, which validates it itself, so
+ * those dialogs carry no cap of their own.
+ * @param dialog - the dialog being rendered.
+ * @returns the field's `maxLength`, or `undefined` when it has none.
+ */
+function dialogNameLimit(dialog: Dialog): number | undefined {
+  return dialog.kind === 'createGroup' || dialog.kind === 'renameGroup'
+    ? MAX_GROUP_NAME_LENGTH
+    : undefined
 }
 
 /** The name a rename dialog starts from. */

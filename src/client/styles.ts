@@ -1,10 +1,13 @@
 /**
  * Plugin-owned stylesheet.
  *
- * Every value is a `--dsw-*` design token, so the browser follows the shipped
- * theme in both light and dark mode exactly like the surface it replaces. Class
- * names are prefixed `dwo-` (dsh-workspace-organize) because this sheet is global:
- * the web shell injects plugin CSS into the page, not into a shadow root.
+ * Colour, radius and motion come from the shell's own tokens (`--dsw-*`, plus
+ * `--dsh-*` for the two geometry variables the sidebar hands down), so the
+ * browser follows the shipped theme in both light and dark mode exactly like the
+ * surface it replaces. Metrics stay the shipped pixel values, because the row
+ * heights are what make the tree line up with the rows around it. Class names
+ * are prefixed `dwo-` (dsh-workspace-organize) because this sheet is global: the
+ * web shell injects plugin CSS into the page, not into a shadow root.
  */
 export const STYLES = `
 .dwo-browse { --dsh-session-list-edge-inset: var(--dsh-sidebar-inline-padding, 0px); --dwo-scrollbar-w: 5px; --dwo-scrollbar-off: 2px; flex:1; min-height:0; display:flex; flex-direction:column; box-sizing:border-box; padding-right:var(--dsh-session-list-edge-inset); color:var(--dsw-alias-label-primary); }

@@ -81,7 +81,11 @@ function createServices(ctx: Context): Services {
   }
 
   return {
-    openSession: (sessionId: SessionId) => { ctx.get('uiWorkspace')?.openSession(sessionId) },
+    openSession: (sessionId: SessionId) => {
+      const ui = ctx.get('uiWorkspace')
+      if (ui === undefined) { unavailable('openSession'); return }
+      ui.openSession(sessionId)
+    },
     startSession: (workspaceId: WorkspaceId) => {
       const ui = ctx.get('uiWorkspace')
       if (ui === undefined) { unavailable('startSession'); return }

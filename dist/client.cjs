@@ -9,18 +9,6 @@ Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 let react = require("react");
 let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 let react_jsx_runtime = require("react/jsx-runtime");
-//#region src/client/contract.ts
-/**
-* Recover a branded Workspace id from the plain string the group document
-* stores. The document is JSON, so its ids are strings; every id in it was
-* minted by the official registry, which is what makes the narrowing sound.
-* @param value - the stored id.
-* @returns the same id, branded for the official client services.
-*/
-function asWorkspaceId(value) {
-	return value;
-}
-//#endregion
 //#region src/shared/contract.ts
 /**
 * The group document: the only state this plugin owns.
@@ -93,6 +81,18 @@ function normalizeGroupDocument(raw) {
 		version: 1,
 		groups: out
 	};
+}
+//#endregion
+//#region src/client/contract.ts
+/**
+* Recover a branded Workspace id from the plain string the group document
+* stores. The document is JSON, so its ids are strings; every id in it was
+* minted by the official registry, which is what makes the narrowing sound.
+* @param value - the stored id.
+* @returns the same id, branded for the official client services.
+*/
+function asWorkspaceId(value) {
+	return value;
 }
 //#endregion
 //#region src/client/groups.ts
@@ -346,19 +346,15 @@ const ZH = {
 	timeYears: (count) => `${count}年`
 };
 /**
-* Pick the locale from the browser language.
-* @returns `'zh'` for a Chinese browser language, `'en'` otherwise (and under
-* a test runner, where no navigator exists).
+* Pick the copy for the browser's language.
+* @returns `'zh'` for a Chinese browser language, `'en'` otherwise.
 */
 function detectLocale() {
-	return (typeof navigator === "undefined" ? "" : navigator.language).toLowerCase().startsWith("zh") ? "zh" : "en";
-}
-/** The copy for one locale. */
-function messagesFor(locale) {
-	return locale === "zh" ? ZH : EN;
+	if (typeof navigator === "undefined") return "en";
+	return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
 }
 /** The copy this browser renders in. */
-const messages = messagesFor(detectLocale());
+const messages = detectLocale() === "zh" ? ZH : EN;
 //#endregion
 //#region src/client/select.ts
 /**
@@ -375,12 +371,22 @@ function mainSessionId(list) {
 /**
 * Whether one session renders as a row at all.
 *
-* Ordinary sessions do. A blank one is a provisional New Session that nothing
-* has been sent to yet, and the shipped derivation (`sessionVisible` in
-* ui-workspace's `tree.ts`) keeps exactly one: the one the main view holds.
-* Every other blank stays out of the list — those are the drafts left behind by
-* earlier "new session" clicks, and rendering them put a row named after each
-* workspace's directory in the tree.
+* Ordinary sessions do. Two classes do not, and both are excluded here rather
+* than at each call site so that the rows, the group content counts and the
+* group-level operations cannot disagree about what "a session in this group"
+* is:
+*
+* A blank one is a provisional New Session that nothing has been sent to yet,
+* and the shipped derivation (`sessionVisible` in ui-workspace's `tree.ts`)
+* keeps exactly one: the one the main view holds. Every other blank stays out of
+* the list — those are the drafts left behind by earlier "new session" clicks,
+* and rendering them put a row named after each workspace's directory in the
+* tree.
+*
+* A subagent child is shown by its parent's own header, never as a top-level
+* row. `SessionListState` carries them (`origin: 'subagent'`), so without this
+* rule a spawned child would appear as an ordinary row — and a group-level
+* archive would archive it.
 *
 * Archived rows follow the filter, exactly as they do in the shipped browser:
 * hidden by default, shown beside the rest, or shown alone.
@@ -393,12 +399,38 @@ function mainSessionId(list) {
 */
 function sessionShown(row, id, main, archived, archivedFilter = "default") {
 	if (row === void 0) return false;
+	if (row.origin === "subagent") return false;
 	if (row.blank && id !== main) return false;
 	switch (archivedFilter) {
 		case "default": return !archived.has(id);
 		case "show": return true;
 		case "only": return archived.has(id);
 	}
+}
+/**
+* Put surviving rows in the browser's render order.
+*
+* One rule serves every listing: the retained placeholder leads, archived rows
+* trail the live ones — where the shipped manual order keeps them — and each
+* partition keeps the caller's order. Because it holds for search results too,
+* a match from the archive never outranks a live one.
+* @param ids - ids that survived the visibility rule, in caller order.
+* @param main - the retained session id.
+* @param archived - registry-global archive set.
+* @returns the same ids, placeholder first, archived last.
+*/
+function partitionRows(ids, main, archived) {
+	const leading = [];
+	const live = [];
+	const spent = [];
+	for (const id of ids) if (id === main) leading.push(id);
+	else if (archived.has(id)) spent.push(id);
+	else live.push(id);
+	return [
+		...leading,
+		...live,
+		...spent
+	];
 }
 /**
 * The sessions one Workspace shows, in render order.
@@ -410,30 +442,18 @@ function sessionShown(row, id, main, archived, archivedFilter = "default") {
 *
 * Two partitions apply to whatever the filter and query leave: the placeholder
 * leads, and archived rows trail the live ones — where the shipped manual order
-* keeps them. Both hold for search results as well, so a match from the archive
-* never outranks a live one.
+* keeps them. {@link partitionRows} owns both.
 * @param selection - the snapshots and query to read.
 * @returns visible session ids, placeholder first, archived last.
 */
 function visibleSessionIds(selection) {
 	const { list, workspace, main, archived, query, archivedFilter = "default" } = selection;
 	const shown = workspace.sessionIds.filter((id) => sessionShown(list.byId[id], id, main, archived, archivedFilter));
-	const matched = query === "" ? shown : shown.filter((id) => {
+	return partitionRows(query === "" ? shown : shown.filter((id) => {
 		const row = list.byId[id];
 		if (row === void 0 || row.blank) return false;
 		return row.displayTitle.toLowerCase().includes(query);
-	});
-	const leading = [];
-	const live = [];
-	const spent = [];
-	for (const id of matched) if (id === main) leading.push(id);
-	else if (archived.has(id)) spent.push(id);
-	else live.push(id);
-	return [
-		...leading,
-		...live,
-		...spent
-	];
+	}), main, archived);
 }
 /**
 * The sessions no Workspace accounts for, in render order.
@@ -447,9 +467,9 @@ function visibleSessionIds(selection) {
 *
 * The order is the shipped bucket's own: newest first with Session identity as
 * the deterministic tie-break, since this plugin keeps no manual order. The
-* partitions are a Workspace listing's, so both read alike: the retained
-* placeholder leads, archived rows trail live ones, and search narrows each
-* without reordering it.
+* partitions are a Workspace listing's ({@link partitionRows}), so both read
+* alike: the retained placeholder leads, archived rows trail live ones, and
+* search narrows each without reordering it.
 * @param list - sessions list snapshot; its `ids` are the catalog's membership.
 * @param workspaces - authoritative Workspace membership.
 * @param main - the retained session id, from {@link mainSessionId}.
@@ -461,7 +481,7 @@ function visibleSessionIds(selection) {
 function unownedSessionIds(list, workspaces, main, archived, query, archivedFilter = "default") {
 	const accounted = /* @__PURE__ */ new Set();
 	for (const workspace of workspaces) for (const id of workspace.sessionIds) accounted.add(id);
-	const shown = list.ids.filter((id) => !accounted.has(id) && sessionShown(list.byId[id], id, main, archived, archivedFilter)).filter((id) => {
+	return partitionRows(list.ids.filter((id) => !accounted.has(id) && sessionShown(list.byId[id], id, main, archived, archivedFilter)).filter((id) => {
 		if (query === "") return true;
 		const row = list.byId[id];
 		if (row === void 0 || row.blank) return false;
@@ -471,18 +491,7 @@ function unownedSessionIds(list, workspaces, main, archived, query, archivedFilt
 		const other = list.byId[right]?.updatedAt ?? 0;
 		if (at !== other) return other - at;
 		return left < right ? -1 : left > right ? 1 : 0;
-	});
-	const leading = [];
-	const live = [];
-	const spent = [];
-	for (const id of shown) if (id === main) leading.push(id);
-	else if (archived.has(id)) spent.push(id);
-	else live.push(id);
-	return [
-		...leading,
-		...live,
-		...spent
-	];
+	}), main, archived);
 }
 /**
 * Visible rows that actually hold something.
@@ -558,8 +567,16 @@ function groupRollUp(members, statuses, archived) {
 	};
 }
 /**
-* Compact relative-time bucketing, shared with the shipped rows so two surfaces
-* dating the same session never disagree.
+* Compact relative-time bucketing, mirroring `relativeTime` from
+* `@deepseek-ai/dsh-client-ui-primitives` so the two surfaces dating the same
+* session never disagree.
+*
+* The boundaries are restated rather than imported on purpose: this module is
+* the dependency-free half of the Client, and the primitives' runtime entry
+* cannot load outside the shell's own module table, so importing it would drag
+* the whole component library into every derivation. Only the boundaries can
+* drift — the bucket vocabulary itself is the primitives' own
+* ({@link TimeBucket} is `RelativeTimeUnit`), and `select.spec.ts` pins them.
 * @param at - epoch ms of the dated moment.
 * @param now - current epoch ms.
 * @returns the bucket plus its magnitude (0 for "now").
@@ -617,10 +634,13 @@ function timeLabel(at, now, messages) {
 /**
 * Plugin-owned stylesheet.
 *
-* Every value is a `--dsw-*` design token, so the browser follows the shipped
-* theme in both light and dark mode exactly like the surface it replaces. Class
-* names are prefixed `dwo-` (dsh-workspace-organize) because this sheet is global:
-* the web shell injects plugin CSS into the page, not into a shadow root.
+* Colour, radius and motion come from the shell's own tokens (`--dsw-*`, plus
+* `--dsh-*` for the two geometry variables the sidebar hands down), so the
+* browser follows the shipped theme in both light and dark mode exactly like the
+* surface it replaces. Metrics stay the shipped pixel values, because the row
+* heights are what make the tree line up with the rows around it. Class names
+* are prefixed `dwo-` (dsh-workspace-organize) because this sheet is global: the
+* web shell injects plugin CSS into the page, not into a shadow root.
 */
 const STYLES = `
 .dwo-browse { --dsh-session-list-edge-inset: var(--dsh-sidebar-inline-padding, 0px); --dwo-scrollbar-w: 5px; --dwo-scrollbar-off: 2px; flex:1; min-height:0; display:flex; flex-direction:column; box-sizing:border-box; padding-right:var(--dsh-session-list-edge-inset); color:var(--dsw-alias-label-primary); }
@@ -737,6 +757,7 @@ function GroupedBrowser(props) {
 	const [dialog, setDialog] = (0, react.useState)(void 0);
 	const [busy, setBusy] = (0, react.useState)(false);
 	const [hostSaved, setHostSaved] = (0, react.useState)(true);
+	const saveSeq = (0, react.useRef)(0);
 	const [now, setNow] = (0, react.useState)(() => Date.now());
 	(0, react.useEffect)(() => {
 		let live = true;
@@ -754,11 +775,23 @@ function GroupedBrowser(props) {
 	const persist = (0, react.useCallback)((next) => {
 		setGroups(next);
 		setHostSaved(false);
+		const seq = ++saveSeq.current;
 		saveGroupDocument({
 			version: 1,
 			groups: next
-		}).then((ok) => setHostSaved(ok));
+		}).then((ok) => {
+			if (seq === saveSeq.current) setHostSaved(ok);
+		});
 	}, []);
+	/**
+	* Drop members whose Workspace no longer exists.
+	*
+	* The tree drops them in memory and this effect does not write: it runs off a
+	* snapshot the operator did not edit, and the Host copy is what a reload reads
+	* back, so an automatic write here would race every deliberate edit. The stale
+	* ids therefore stay in the stored document until the next edit, which
+	* persists the list this effect has already pruned.
+	*/
 	(0, react.useEffect)(() => {
 		if (!workspaceReady || groups === void 0) return;
 		const known = new Set(workspaces.map((workspace) => workspace.workspaceId));
@@ -791,6 +824,21 @@ function GroupedBrowser(props) {
 		for (const workspace of workspaces) out.set(workspace.workspaceId, currentGroups.filter((group) => !group.workspaceIds.includes(workspace.workspaceId)));
 		return out;
 	}, [currentGroups, workspaces]);
+	/**
+	* Move one Workspace into a group, whichever group held it before.
+	*
+	* One pass over the document, so the destination and the source cannot both
+	* claim the Workspace, and every candidate destination shares this one
+	* implementation instead of rebuilding the document per submenu row.
+	* @param workspaceId - the Workspace to move.
+	* @param targetGroupId - the group that should list it.
+	*/
+	const moveWorkspace = (0, react.useCallback)((workspaceId, targetGroupId) => {
+		persist(currentGroups.map((group) => ({
+			...group,
+			workspaceIds: [...group.workspaceIds.filter((id) => id !== workspaceId), ...group.id === targetGroupId ? [workspaceId] : []]
+		})));
+	}, [currentGroups, persist]);
 	const main = (0, react.useMemo)(() => mainSessionId(list), [list]);
 	const currentSessionId = panelActive ? void 0 : main;
 	const activeWorkspaceId = (0, react.useMemo)(() => {
@@ -939,6 +987,17 @@ function GroupedBrowser(props) {
 		archiveWithFallback(sessionId).catch((error) => console.warn("workspace-organize: archive refused", sessionId, error));
 	};
 	/**
+	* Restore one Session from the archive.
+	*
+	* The same shape as {@link archiveOne} because the two verbs sit in the same
+	* row and fail the same way: the Host can refuse either, and a rejection left
+	* unhandled would surface as an unhandled rejection instead of a report.
+	* @param sessionId - the Session to restore.
+	*/
+	const restoreOne = (sessionId) => {
+		services.unarchiveSession(sessionId).catch((error) => console.warn("workspace-organize: restore refused", sessionId, error));
+	};
+	/**
 	* Open a row menu at a viewport point.
 	*
 	* The gesture is claimed on `contextmenu`, never on mousedown, so that it
@@ -1003,9 +1062,7 @@ function GroupedBrowser(props) {
 			}],
 			actions: {
 				archive: () => archiveOne(sessionId),
-				unarchive: () => {
-					services.unarchiveSession(sessionId);
-				},
+				unarchive: () => restoreOne(sessionId),
 				rename: () => setDialog({
 					kind: "renameSession",
 					sessionId,
@@ -1057,7 +1114,7 @@ function GroupedBrowser(props) {
 							className: "dwo-act-btn",
 							onClick: (event) => {
 								event.stopPropagation();
-								if (isArchived) services.unarchiveSession(sessionId);
+								if (isArchived) restoreOne(sessionId);
 								else archiveOne(sessionId);
 							},
 							children: isArchived ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconUnarchiveOutlineRegular, { size: 16 }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconArchiveOutlineRegular, { size: 16 })
@@ -1072,6 +1129,7 @@ function GroupedBrowser(props) {
 		const key = `ws:${workspace.workspaceId}`;
 		const isOpen = isExpanded(key, workspace.workspaceId === activeWorkspaceId);
 		const others = destinationsByWorkspace.get(workspace.workspaceId) ?? [];
+		const grouped = groupedIds.has(workspace.workspaceId);
 		const spec = () => {
 			const items = [{
 				id: "rename",
@@ -1091,11 +1149,12 @@ function GroupedBrowser(props) {
 					label: group.name
 				}))
 			});
-			items.push({
+			if (grouped) items.push({
 				id: "remove",
 				label: messages.removeFromGroup,
 				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenOutlineRegular, {})
-			}, {
+			});
+			items.push({
 				id: "delete",
 				label: messages.deleteWorkspace,
 				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconTrashOutlineRegular, {}),
@@ -1118,10 +1177,7 @@ function GroupedBrowser(props) {
 					title: workspace.title
 				})
 			};
-			for (const target of others) actions[`move:${target.id}`] = () => persist(currentGroups.map((group) => ({
-				...group,
-				workspaceIds: [...group.workspaceIds.filter((id) => id !== workspace.workspaceId), ...group.id === target.id ? [workspace.workspaceId] : []]
-			})));
+			for (const target of others) actions[`move:${target.id}`] = () => moveWorkspace(workspace.workspaceId, target.id);
 			return {
 				items,
 				actions
@@ -1695,6 +1751,7 @@ function DialogHost({ dialog, busy, close, submit }) {
 			value: name,
 			placeholder: dialogFieldLabel(dialog),
 			"aria-label": dialogFieldLabel(dialog),
+			maxLength: dialogNameLimit(dialog),
 			"data-modal-autofocus": true,
 			onChange: (event) => setName(event.target.value)
 		})
@@ -1703,6 +1760,21 @@ function DialogHost({ dialog, busy, close, submit }) {
 /** Whether one dialog edits a name. */
 function dialogNeedsName(dialog) {
 	return dialog.kind === "createGroup" || dialog.kind === "renameGroup" || dialog.kind === "renameWorkspace" || dialog.kind === "renameSession";
+}
+/**
+* The character cap of one dialog's name field, when the field has one.
+*
+* A group name is bounded by the group document, which the Host validates whole:
+* one name past {@link MAX_GROUP_NAME_LENGTH} and every save of that document is
+* refused as an invalid document, which the Client can only show as a save that
+* never settles. Capping the field keeps that state unreachable. A Workspace or
+* Session title belongs to its own controller, which validates it itself, so
+* those dialogs carry no cap of their own.
+* @param dialog - the dialog being rendered.
+* @returns the field's `maxLength`, or `undefined` when it has none.
+*/
+function dialogNameLimit(dialog) {
+	return dialog.kind === "createGroup" || dialog.kind === "renameGroup" ? 200 : void 0;
 }
 /** The name a rename dialog starts from. */
 function currentName(dialog) {
@@ -1793,7 +1865,12 @@ function createServices(ctx) {
 	};
 	return {
 		openSession: (sessionId) => {
-			ctx.get("uiWorkspace")?.openSession(sessionId);
+			const ui = ctx.get("uiWorkspace");
+			if (ui === void 0) {
+				unavailable("openSession");
+				return;
+			}
+			ui.openSession(sessionId);
 		},
 		startSession: (workspaceId) => {
 			const ui = ctx.get("uiWorkspace");

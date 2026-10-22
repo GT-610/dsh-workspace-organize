@@ -10,9 +10,16 @@
  * module table cannot seed, for one lookup at mount. `navigator.language` is the
  * honest choice until that changes.
  */
+import type { RelativeTimeUnit } from '@deepseek-ai/dsh-client-ui-primitives'
 
-/** Time buckets the rows date themselves with, coarsest last. */
-export type TimeBucket = 'now' | 'minutes' | 'hours' | 'days' | 'months' | 'years'
+/**
+ * Time buckets the rows date themselves with, coarsest last.
+ *
+ * The primitives' own vocabulary, not a copy of it: the shipped rows bucket the
+ * same timestamps, and a row dated by this plugin must never use a bucket the
+ * surface it replaces has no label for.
+ */
+export type TimeBucket = RelativeTimeUnit
 
 /** Every string this plugin renders. Functions take the interpolation values. */
 export interface Messages {
@@ -210,23 +217,17 @@ const ZH: Messages = {
   timeYears: count => `${count}年`,
 }
 
-/** The locale this browser renders in. */
-export type Locale = 'en' | 'zh'
-
 /**
- * Pick the locale from the browser language.
- * @returns `'zh'` for a Chinese browser language, `'en'` otherwise (and under
- * a test runner, where no navigator exists).
+ * Pick the copy for the browser's language.
+ * @returns `'zh'` for a Chinese browser language, `'en'` otherwise.
  */
-export function detectLocale(): Locale {
-  const language = typeof navigator === 'undefined' ? '' : navigator.language
-  return language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
-}
-
-/** The copy for one locale. */
-export function messagesFor(locale: Locale): Messages {
-  return locale === 'zh' ? ZH : EN
+function detectLocale(): 'en' | 'zh' {
+  // Nothing guarantees a DOM at import time: this module is a plain copy table
+  // plus one lookup, so a non-browser importer gets English rather than a
+  // TypeError.
+  if (typeof navigator === 'undefined') return 'en'
+  return navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
 }
 
 /** The copy this browser renders in. */
-export const messages: Messages = messagesFor(detectLocale())
+export const messages: Messages = detectLocale() === 'zh' ? ZH : EN

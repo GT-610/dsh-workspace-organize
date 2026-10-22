@@ -35,6 +35,18 @@ export const MAX_GROUPS = 200
 /** Cap on the Workspaces one group may hold. */
 export const MAX_MEMBERS_PER_GROUP = 500
 
+/** Cap on a group id or a member Workspace id, in characters. */
+export const MAX_ID_LENGTH = 128
+
+/**
+ * Cap on a group name, in characters.
+ *
+ * The Client's group dialogs carry it as their input's `maxLength`, so an
+ * operator cannot type a name the Host would reject as an invalid document —
+ * a rejection the Client could only see as a save that never settles.
+ */
+export const MAX_GROUP_NAME_LENGTH = 200
+
 /**
  * Cap on members across the whole document.
  *
@@ -96,13 +108,13 @@ export function normalizeGroupDocument(raw: unknown): GroupDocument | null {
   for (const group of groups) {
     if (group === null || typeof group !== 'object' || Array.isArray(group)) return null
     const { id, name, workspaceIds } = group as Record<string, unknown>
-    if (!isBoundedId(id, 128) || typeof name !== 'string' || name.length > 200) return null
+    if (!isBoundedId(id, MAX_ID_LENGTH) || typeof name !== 'string' || name.length > MAX_GROUP_NAME_LENGTH) return null
     if (seenIds.has(id)) return null
     seenIds.add(id)
     if (!Array.isArray(workspaceIds) || workspaceIds.length > MAX_MEMBERS_PER_GROUP) return null
     const members: string[] = []
     for (const member of workspaceIds) {
-      if (!isBoundedId(member, 128)) return null
+      if (!isBoundedId(member, MAX_ID_LENGTH)) return null
       if (placed.has(member)) continue
       placed.add(member)
       members.push(member)
