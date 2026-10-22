@@ -237,6 +237,21 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   )
 
   /**
+   * Whether the bucket has a row under any query and any archive filter.
+   *
+   * Liveness cannot read `unowned`: that derivation folds the search and the
+   * archive filter in, so a typed query narrows it to nothing — and pruning on
+   * that would throw away the operator's explicit fold choice for a bucket that
+   * is still there. This asks the unfiltered question instead: does the catalog
+   * hold a Session no Workspace owns at all? `show` hides no row the row rule
+   * keeps, so it is the widest view the bucket can ever have.
+   */
+  const hasUnowned = useMemo(
+    () => unownedSessionIds(list, workspaces, main, archived, '', 'show').length > 0,
+    [list, workspaces, main, archived],
+  )
+
+  /**
    * Whether the archived-only view holds an unowned row at all.
    *
    * `unowned` folds the search in, so it cannot answer that: a query matching
@@ -261,12 +276,14 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     const live = new Set<string>()
     for (const group of groups) live.add(`g:${group.id}`)
     for (const workspace of workspaces) live.add(`ws:${workspace.workspaceId}`)
-    // The bucket only carries a key while it holds a row to fold, so its choice
-    // is pruned with the rows that earned it.
-    if (unowned.length > 0) live.add(UNOWNED_KEY)
+    // The bucket's key lives as long as the bucket can hold a row, so a search
+    // that happens to hide every one of them does not discard the operator's
+    // choice; with no unowned Session at all the key is pruned like any other
+    // key whose node is gone.
+    if (hasUnowned) live.add(UNOWNED_KEY)
     const next = pruneExpansion(expansion, live)
     if (next !== expansion) persistExpansion(next)
-  }, [workspaceReady, groups, workspaces, unowned.length, expansion, persistExpansion])
+  }, [workspaceReady, groups, workspaces, hasUnowned, expansion, persistExpansion])
 
   const chooseArchivedFilter = useCallback((next: ArchivedFilter) => {
     setArchivedFilter(next)
@@ -781,8 +798,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     const next: Record<string, boolean> = {}
     for (const group of groups ?? []) next[`g:${group.id}`] = value
     for (const workspace of workspaces) next[`ws:${workspace.workspaceId}`] = value
-    // The unowned bucket only carries a key while it holds a row to fold.
-    if (unowned.length > 0) next[UNOWNED_KEY] = value
+    // The bucket is folded like any other node whenever it can hold a row, even
+    // while the current search hides every one of them.
+    if (hasUnowned) next[UNOWNED_KEY] = value
     persistExpansion(next)
   }
 

@@ -200,6 +200,11 @@ function bucket(): Element | null | undefined {
   return document.querySelector('[data-row-key="unowned"]')?.parentElement
 }
 
+/** The stored disclosure choices, as the mirror holds them. */
+function storedExpansion(): Record<string, boolean> {
+  return JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
+}
+
 describe('GroupedBrowser unowned bucket', () => {
   it('renders a session no workspace owns, with no workspace row to reach it through', async () => {
     mountUnowned()
@@ -267,6 +272,31 @@ describe('GroupedBrowser unowned bucket', () => {
     // The bucket's key belongs to no workspace, so it is its own disclosure slot.
     const stored = JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
     expect(stored['u:unowned']).toBe(false)
+  })
+
+  it('keeps its fold choice while a search hides every row of it', async () => {
+    mountUnowned()
+    await userEvent.click(await screen.findByText(messages.ungroupedSessions))
+    await waitFor(() => { expect(storedExpansion()['u:unowned']).toBe(false) })
+    // A query that matches nothing in the bucket: the bucket leaves the tree,
+    // but it still has rows to come back to, so pruning must not read the
+    // filtered derivation and throw the choice away.
+    await userEvent.click(document.querySelector('.dwo-search-btn') as HTMLElement)
+    await userEvent.type(document.querySelector('.dwo-search-input') as HTMLInputElement, 'nothing-matches')
+    await waitFor(() => { expect(document.querySelector('[data-row-key="unowned"]')).toBeNull() })
+    expect(storedExpansion()['u:unowned']).toBe(false)
+    // Clearing the search brings the bucket back the way the operator left it.
+    await userEvent.clear(document.querySelector('.dwo-search-input') as HTMLInputElement)
+    await screen.findByText(messages.ungroupedSessions)
+    expect(bucket()?.querySelector('[data-row-key="unowned"]')?.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('drops the fold choice once no unowned session is left', async () => {
+    // The bucket is gone for good here, so its key is stale like any other.
+    localStorage.setItem('workspaceOrganize.expansion', JSON.stringify({ 'u:unowned': false }))
+    mountUnowned(fakeServices(), [])
+    await screen.findByText('Work')
+    await waitFor(() => { expect(storedExpansion()['u:unowned']).toBeUndefined() })
   })
 
   it('reports no workspaces only when nothing at all would render', async () => {
