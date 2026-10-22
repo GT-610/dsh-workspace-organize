@@ -175,6 +175,116 @@ describe('GroupedBrowser rows', () => {
 })
 
 /**
+ * A catalog whose only Workspace owns one Session, while further Sessions
+ * belong to no Workspace at all — the shipped browser's Ungrouped bucket.
+ * @param services - the operations the mount should reach.
+ * @param extra - Sessions to place in the catalog outside every Workspace.
+ * @param archived - archive-set members.
+ * @returns the mount and its recorded operations.
+ */
+function mountUnowned(
+  services: Services = fakeServices(),
+  extra: readonly SessionSummary[] = [sessionRow('loose', { displayTitle: 'Loose conversation' })],
+  archived: readonly string[] = [],
+) {
+  const named = sessionRow('named')
+  const repo = workspaceView('repo', ['named'])
+  const view = render(
+    <GroupedBrowser {...propsFor([repo], [named, ...extra], services, new Map(), archived)} />,
+  )
+  return { view, services }
+}
+
+/** The unowned bucket's node, found by its header row. */
+function bucket(): Element | null | undefined {
+  return document.querySelector('[data-row-key="unowned"]')?.parentElement
+}
+
+describe('GroupedBrowser unowned bucket', () => {
+  it('renders a session no workspace owns, with no workspace row to reach it through', async () => {
+    mountUnowned()
+    expect(await screen.findByText(messages.ungroupedSessions)).toBeDefined()
+    const row = document.querySelector('[data-row-key="session:loose"]')
+    expect(row).not.toBeNull()
+    expect(row?.textContent).toContain('Loose conversation')
+    // The bucket counts what it holds, so a folded bucket still says it is there.
+    expect(bucket()?.querySelector('.dwo-count')?.textContent).toContain(`1 ${messages.unitSessions}`)
+  })
+
+  it('lists only the sessions no workspace accounts for', async () => {
+    mountUnowned()
+    await screen.findByText(messages.ungroupedSessions)
+    const rows = bucket()?.querySelectorAll('.dwo-session-row') ?? []
+    expect(rows).toHaveLength(1)
+    expect(bucket()?.querySelector('[data-row-key="session:named"]')).toBeNull()
+  })
+
+  it('opens an unowned session when its row is clicked', async () => {
+    const { services } = mountUnowned()
+    const row = await screen.findByText('Loose conversation')
+    await userEvent.click(row)
+    expect(services.openSession).toHaveBeenCalledWith('loose')
+  })
+
+  it('keeps a spent draft out of the bucket', async () => {
+    mountUnowned(fakeServices(), [sessionRow('loose'), sessionRow('spent-draft', { blank: true })])
+    await screen.findByText(messages.ungroupedSessions)
+    expect(bucket()?.querySelector('[data-row-key="session:loose"]')).not.toBeNull()
+    expect(bucket()?.querySelector('[data-row-key="session:spent-draft"]')).toBeNull()
+  })
+
+  it('follows the archived filter', async () => {
+    mountUnowned(
+      fakeServices(),
+      [sessionRow('loose'), sessionRow('archived-loose')],
+      ['archived-loose'],
+    )
+    await screen.findByText(messages.ungroupedSessions)
+    expect(bucket()?.querySelector('[data-row-key="session:archived-loose"]')).toBeNull()
+    await chooseViewOption(messages.showArchived)
+    expect(bucket()?.querySelector('[data-row-key="session:archived-loose"]')).not.toBeNull()
+    await chooseViewOption(messages.onlyArchived)
+    expect(bucket()?.querySelector('[data-row-key="session:loose"]')).toBeNull()
+    expect(bucket()?.querySelector('[data-row-key="session:archived-loose"]')).not.toBeNull()
+  })
+
+  it('counts an unowned archived row as content under the archived-only filter', async () => {
+    mountUnowned(fakeServices(), [sessionRow('archived-loose')], ['archived-loose'])
+    await chooseViewOption(messages.onlyArchived)
+    await screen.findByText(messages.ungroupedSessions)
+    expect(document.querySelector('[data-row-key="session:archived-loose"]')).not.toBeNull()
+    expect(screen.queryByText(messages.archivedOnlyEmpty)).toBeNull()
+  })
+
+  it('folds away when its header is clicked, and remembers the choice', async () => {
+    mountUnowned()
+    const header = await screen.findByText(messages.ungroupedSessions)
+    expect(document.querySelector('[data-row-key="session:loose"]')).not.toBeNull()
+    await userEvent.click(header)
+    await waitFor(() => {
+      expect(document.querySelector('[data-row-key="session:loose"]')).toBeNull()
+    })
+    // The bucket's key belongs to no workspace, so it is its own disclosure slot.
+    const stored = JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
+    expect(stored['u:unowned']).toBe(false)
+  })
+
+  it('reports no workspaces only when nothing at all would render', async () => {
+    // No groups in the document, so every Workspace — including the unowned
+    // bucket — is judged on its own.
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ version: 1, groups: [] }) })))
+    const view = render(<GroupedBrowser {...propsFor([], [], fakeServices())} />)
+    await waitFor(() => { expect(screen.getByText(messages.noWorkspaces)).toBeDefined() })
+    view.unmount()
+    // A loose session is a row even with no Workspace at all, so the empty state
+    // must not claim the tree is empty.
+    render(<GroupedBrowser {...propsFor([], [sessionRow('loose')], fakeServices())} />)
+    await screen.findByText(messages.ungroupedSessions)
+    expect(screen.queryByText(messages.noWorkspaces)).toBeNull()
+  })
+})
+
+/**
  * The verb buttons of one row.
  *
  * They live in a hover strip (`display:none` until the row is hovered), so role

@@ -56,6 +56,7 @@ import {
   rowStatus,
   sessionShown,
   timeLabel,
+  unownedSessionIds,
   visibleSessionIds,
   type ArchivedFilter,
   type SessionSelection,
@@ -98,6 +99,14 @@ interface MenuSpec {
 function indent(depth: number): CSSProperties {
   return { '--dsh-workspace-indent': `${depth * 16}px` } as CSSProperties
 }
+
+/**
+ * Disclosure key of the bucket for Sessions no Workspace accounts for.
+ *
+ * Deliberately outside the `g:` and `ws:` id spaces: the bucket has no id of its
+ * own, and a key that borrowed one could outlive the Workspace it named.
+ */
+const UNOWNED_KEY = 'u:unowned'
 
 /**
  * Render the grouped Workspace browser.
@@ -218,6 +227,27 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     return workspaces.find(workspace => workspace.sessionIds.includes(currentSessionId))?.workspaceId
   }, [currentSessionId, workspaces])
 
+  // Sessions no Workspace accounts for. The shipped browser trails them in its
+  // own `Ungrouped` bucket, which disappears with the browser this entry
+  // shadows: without a bucket of our own such a Session has no row anywhere,
+  // even though it opens, runs and archives like any other.
+  const unowned = useMemo(
+    () => unownedSessionIds(list, workspaces, main, archived, normalizedQuery, archivedFilter),
+    [list, workspaces, main, archived, normalizedQuery, archivedFilter],
+  )
+
+  /**
+   * Whether the archived-only view holds an unowned row at all.
+   *
+   * `unowned` folds the search in, so it cannot answer that: a query matching
+   * no archived row would read as "the archive is empty". This asks the same
+   * derivation with the query cleared.
+   */
+  const unownedArchived = useMemo(
+    () => unownedSessionIds(list, workspaces, main, archived, '', 'only').length > 0,
+    [list, workspaces, main, archived],
+  )
+
   const persistExpansion = useCallback((next: ExpansionState) => {
     setExpansion(next)
     saveExpansion(next)
@@ -231,9 +261,12 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     const live = new Set<string>()
     for (const group of groups) live.add(`g:${group.id}`)
     for (const workspace of workspaces) live.add(`ws:${workspace.workspaceId}`)
+    // The bucket only carries a key while it holds a row to fold, so its choice
+    // is pruned with the rows that earned it.
+    if (unowned.length > 0) live.add(UNOWNED_KEY)
     const next = pruneExpansion(expansion, live)
     if (next !== expansion) persistExpansion(next)
-  }, [workspaceReady, groups, workspaces, expansion, persistExpansion])
+  }, [workspaceReady, groups, workspaces, unowned.length, expansion, persistExpansion])
 
   const chooseArchivedFilter = useCallback((next: ArchivedFilter) => {
     setArchivedFilter(next)
@@ -305,8 +338,10 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
 
   // Whether any row would render at all. Only the archived-only filter needs it:
   // an install with nothing archived must say so once, rather than repeat the
-  // same line under every Workspace.
+  // same line under every Workspace. The unowned bucket is a row site too, or an
+  // archive holding only unowned Sessions would read as empty.
   const hasVisibleContent = archivedFilter !== 'only'
+    || unowned.length > 0
     || workspaces.some(workspace => visibleOf(workspace.workspaceId).length > 0)
 
   // Whether the archived-only view would have a row to show if the search were
@@ -315,7 +350,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   // membership alone is not enough either, since a row the catalog does not
   // carry, or a spent blank, never renders. Asking the renderer's own predicate
   // keeps the empty state from contradicting the tree it sits in.
-  const hasArchived = workspaces.some(workspace =>
+  const hasArchived = unownedArchived || workspaces.some(workspace =>
     workspace.sessionIds.some(sessionId =>
       sessionShown(list.byId[sessionId], sessionId, main, archived, 'only')))
 
@@ -364,7 +399,14 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     openMenu(rowKey, spec, { x: rect.left, y: rect.bottom + 4 })
   }
 
-  const sessionRow = (sessionId: SessionId, depth: number) => {
+  /**
+   * One session row.
+   * @param sessionId - the Session to render.
+   * @param depth - indent level, in 16px steps.
+   * @param level - `aria-level` of the row; sessions sit one step below the node
+   * that lists them, which is a Workspace — or the unowned bucket.
+   */
+  const sessionRow = (sessionId: SessionId, depth: number, level = 3) => {
     const row = list.byId[sessionId]
     if (row === undefined) return null
     // The one visible blank is a placeholder, not a conversation: it shows the
@@ -397,7 +439,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         // resolve the browser it replaces.
         role="treeitem"
         data-row-key={`session:${sessionId}`}
-        aria-level={3}
+        aria-level={level}
         aria-selected={currentSessionId === sessionId}
         aria-description={isArchived ? messages.archivedNotOpenable : undefined}
         style={indent(depth)}
@@ -646,6 +688,52 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     )
   }
 
+  /**
+   * The bucket holding Sessions no Workspace accounts for.
+   *
+   * It rests open. A folded bucket would hide exactly the rows it exists to
+   * reveal, and there is no Workspace row above it to open first — the operator
+   * has nothing to click but this header — so the disclosure only ever closes
+   * it on purpose. Search and the archived-only filter force it open like every
+   * other node.
+   * @param ids - the bucket's visible rows, already in render order.
+   * @returns the bucket node, or nothing when it holds no row.
+   */
+  const unownedNode = (ids: readonly SessionId[]) => {
+    if (ids.length === 0) return null
+    const isOpen = isExpanded(UNOWNED_KEY, true)
+    return (
+      <div key={UNOWNED_KEY} className="dwo-group-node">
+        <div
+          className="dwo-row dwo-group-row"
+          role="treeitem"
+          data-row-key="unowned"
+          aria-level={1}
+          aria-expanded={isOpen}
+          style={indent(0)}
+          onClick={() => setExpanded(UNOWNED_KEY, !isOpen)}
+          // The bucket offers no menu, but its right-click is still claimed so
+          // the platform menu never appears over the tree — the same contract
+          // every other row of this browser follows.
+          onContextMenu={(event: React.MouseEvent) => event.preventDefault()}
+        >
+          <span className="dwo-slot dwo-chev">
+            <span className={`dwo-arrow${isOpen ? ' open' : ''}`}><IconTriangleRightFillRegular size={14} /></span>
+          </span>
+          <span className="dwo-text">
+            <span className="dwo-row-title dwo-group-title">{messages.ungroupedSessions}</span>
+          </span>
+          <span className="dwo-count">{`${ids.length} ${messages.unitSessions}`}</span>
+        </div>
+        {isOpen && (
+          <div className="dwo-ws-sessions">
+            {ids.map(id => sessionRow(id, 1, 2))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   const confirmArchiveGroup = async (groupId: string): Promise<void> => {
     const group = groups?.find(candidate => candidate.id === groupId)
     if (group === undefined) return
@@ -693,6 +781,8 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     const next: Record<string, boolean> = {}
     for (const group of groups ?? []) next[`g:${group.id}`] = value
     for (const workspace of workspaces) next[`ws:${workspace.workspaceId}`] = value
+    // The unowned bucket only carries a key while it holds a row to fold.
+    if (unowned.length > 0) next[UNOWNED_KEY] = value
     persistExpansion(next)
   }
 
@@ -816,10 +906,11 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
               <div className="dwo-list" role="tree" aria-label={messages.organizeTitle}>
                 {currentGroups.map(group => groupNode(group, 0))}
                 {currentGroups.length > 0 && ungrouped.length > 0 && (
-                  <div className="dwo-sep">{messages.ungrouped}</div>
+                  <div className="dwo-sep">{messages.ungroupedWorkspaces}</div>
                 )}
                 {ungrouped.map(workspace => workspaceRow(workspace, 0))}
-                {currentGroups.length === 0 && ungrouped.length === 0 && (
+                {unownedNode(unowned)}
+                {currentGroups.length === 0 && ungrouped.length === 0 && unowned.length === 0 && (
                   <div className="dwo-empty">{messages.noWorkspaces}</div>
                 )}
               </div>
