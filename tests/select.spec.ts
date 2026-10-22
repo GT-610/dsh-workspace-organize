@@ -19,6 +19,7 @@ import {
   rowStatus,
   sessionShown,
   timeLabel,
+  unownedSessionIds,
   visibleSessionIds,
   type ArchivedFilter,
   type SessionSelection,
@@ -188,6 +189,67 @@ describe('archived-row visibility', () => {
     const ordered = workspace('repo', ['older-archived', 'newer-live'])
     const matched = visibleSessionIds(selection(both, ordered, 'report', ['older-archived'], 'show'))
     expect(matched).toEqual(['newer-live', 'older-archived'])
+  })
+})
+
+describe('unownedSessionIds', () => {
+  const current = row('blank-current', {
+    blank: true,
+    retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    updatedAt: 50,
+  })
+  const spent = row('blank-spent', { blank: true, updatedAt: 90 })
+  const oldest = row('loose-old', { displayTitle: 'Alpha note', updatedAt: 10 })
+  const newest = row('loose-new', { displayTitle: 'Beta note', updatedAt: 80 })
+  const tied = row('loose-tied', { displayTitle: 'Gamma note', updatedAt: 80 })
+  const owned = row('owned', { displayTitle: 'Owned note', updatedAt: 70 })
+  const gone = row('loose-archived', { displayTitle: 'Delta note', updatedAt: 95 })
+  const sessions = list([current, spent, oldest, newest, tied, owned, gone])
+  const target = workspace('repo', ['owned'])
+  // `gone` is archived throughout, so a case that wants it on screen asks for a
+  // filter that shows archived rows rather than pretending it is live.
+  const unowned = (
+    query = '',
+    archivedFilter: ArchivedFilter = 'default',
+  ): readonly string[] => unownedSessionIds(
+    sessions,
+    [target],
+    mainSessionId(sessions),
+    new Set([id('loose-archived')]),
+    query,
+    archivedFilter,
+  )
+
+  it('lists only the sessions no workspace accounts for, newest first', () => {
+    // `owned` belongs to the workspace, the spent draft is not a row at all, and
+    // the two 80ms rows fall back to session identity.
+    expect(unowned()).toEqual(['blank-current', 'loose-new', 'loose-tied', 'loose-old'])
+  })
+
+  it('leads with the retained placeholder but still hides a spent draft', () => {
+    expect(unowned()).toContain('blank-current')
+    expect(unowned()).not.toContain('blank-spent')
+  })
+
+  it('matches a query on the title, and never on a blank placeholder', () => {
+    expect(unowned('beta')).toEqual(['loose-new'])
+    expect(unowned('note')).toEqual(['loose-new', 'loose-tied', 'loose-old'])
+    // The placeholder's canonical title is a directory name, so it is excluded
+    // from search exactly like the workspace listing excludes it.
+    expect(unowned('blank')).toEqual([])
+  })
+
+  it('follows the archived filter, trailing archived rows behind live ones', () => {
+    // `loose-archived` is the newest row of all: recency alone would put it
+    // first, so this also proves the partitions survive the ordering.
+    expect(unowned('', 'show'))
+      .toEqual(['blank-current', 'loose-new', 'loose-tied', 'loose-old', 'loose-archived'])
+    expect(unowned('', 'only')).toEqual(['loose-archived'])
+    expect(unowned('', 'default')).not.toContain('loose-archived')
+  })
+
+  it('is empty when every session has a workspace', () => {
+    expect(unownedSessionIds(list([owned]), [target], undefined, new Set(), '')).toEqual([])
   })
 })
 

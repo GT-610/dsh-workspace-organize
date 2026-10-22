@@ -131,6 +131,68 @@ export function visibleSessionIds(selection: SessionSelection): SessionId[] {
 }
 
 /**
+ * The sessions no Workspace accounts for, in render order.
+ *
+ * A Workspace owns its members through `sessionIds`, so a Session that is in
+ * none of them belongs to no account at all: it is a Session whose Workspace
+ * registration was deleted, or one started outside any Workspace. The shipped
+ * browser trails exactly those rows in an `Ungrouped` bucket (`groupByWorkspace`
+ * in ui-workspace's `tree.ts`), so shadowing that browser makes porting the
+ * bucket mandatory — nothing else in this tree would give such a Session a row.
+ *
+ * The order is the shipped bucket's own: newest first with Session identity as
+ * the deterministic tie-break, since this plugin keeps no manual order. The
+ * partitions are a Workspace listing's, so both read alike: the retained
+ * placeholder leads, archived rows trail live ones, and search narrows each
+ * without reordering it.
+ * @param list - sessions list snapshot; its `ids` are the catalog's membership.
+ * @param workspaces - authoritative Workspace membership.
+ * @param main - the retained session id, from {@link mainSessionId}.
+ * @param archived - registry-global archive set.
+ * @param query - trimmed, lower-cased search query; empty lists everything.
+ * @param archivedFilter - archived-row visibility choice; omitted hides them.
+ * @returns visible unowned session ids, placeholder first, archived last.
+ */
+export function unownedSessionIds(
+  list: SessionListState,
+  workspaces: readonly WorkspaceView[],
+  main: SessionId | undefined,
+  archived: ReadonlySet<SessionId>,
+  query: string,
+  archivedFilter: ArchivedFilter = 'default',
+): SessionId[] {
+  const accounted = new Set<SessionId>()
+  for (const workspace of workspaces) {
+    for (const id of workspace.sessionIds) accounted.add(id)
+  }
+  const shown = list.ids
+    .filter(id => !accounted.has(id) && sessionShown(list.byId[id], id, main, archived, archivedFilter))
+    .filter((id) => {
+      if (query === '') return true
+      const row = list.byId[id]
+      // A blank placeholder never matches a query, for the same reason the
+      // Workspace listing excludes it: its title is a directory name.
+      if (row === undefined || row.blank) return false
+      return row.displayTitle.toLowerCase().includes(query)
+    })
+    .toSorted((left, right) => {
+      const at = list.byId[left]?.updatedAt ?? 0
+      const other = list.byId[right]?.updatedAt ?? 0
+      if (at !== other) return other - at
+      return left < right ? -1 : left > right ? 1 : 0
+    })
+  const leading: SessionId[] = []
+  const live: SessionId[] = []
+  const spent: SessionId[] = []
+  for (const id of shown) {
+    if (id === main) leading.push(id)
+    else if (archived.has(id)) spent.push(id)
+    else live.push(id)
+  }
+  return [...leading, ...live, ...spent]
+}
+
+/**
  * Visible rows that actually hold something.
  *
  * The blank placeholder is excluded, and so is an archived row even while the
