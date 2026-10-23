@@ -5,15 +5,17 @@
  * what a row's verbs do, and that the group and workspace menus reach the right
  * operation. The shipped primitives' appearance is the shell's business.
  */
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
+import { MAX_GROUP_NAME_LENGTH } from '../src/shared/contract.ts'
 import { GroupedBrowser } from '../src/client/Browser.tsx'
 import type { OrganizeBrowserProps, Services } from '../src/client/contract.ts'
+import { ARCHIVED_FILTER_STORAGE_KEY, EXPANSION_STORAGE_KEY } from '../src/client/groups.ts'
 import { messages } from '../src/client/i18n.ts'
 
 const id = (value: string): SessionId => value as SessionId
@@ -104,10 +106,8 @@ function mountBrowser(services: Services = fakeServices()) {
   const named = sessionRow('named')
   const repo = workspaceView('repo', ['named', 'blank-spent', 'blank-current'])
   const other = workspaceView('other', [])
-  const view = render(
-    <GroupedBrowser {...propsFor([repo, other], [current, spent, named], services)} />,
-  )
-  return { view, services }
+  render(<GroupedBrowser {...propsFor([repo, other], [current, spent, named], services)} />)
+  return { services }
 }
 
 beforeEach(() => {
@@ -177,6 +177,21 @@ describe('GroupedBrowser rows', () => {
     expect(count?.textContent).toContain(`1 ${messages.unitRunning}`)
     expect(count?.querySelector('[data-state-dot="ongoing"]')).not.toBeNull()
   })
+
+  it('leaves a subagent child to the parent header that shows it', async () => {
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const named = sessionRow('named')
+    // The catalog carries spawned children; the shipped browser never gives them
+    // a top-level row of their own, and neither may this tree.
+    const child = sessionRow('spawned', { origin: 'subagent', parentId: id('named') })
+    const repo = workspaceView('repo', ['named', 'spawned', 'blank-current'])
+    render(<GroupedBrowser {...propsFor([repo], [current, named, child], fakeServices())} />)
+    await screen.findByText('named')
+    expect(document.querySelector('[data-row-key="session:spawned"]')).toBeNull()
+  })
 })
 
 /**
@@ -194,10 +209,8 @@ function mountUnowned(
 ) {
   const named = sessionRow('named')
   const repo = workspaceView('repo', ['named'])
-  const view = render(
-    <GroupedBrowser {...propsFor([repo], [named, ...extra], services, new Map(), archived)} />,
-  )
-  return { view, services }
+  render(<GroupedBrowser {...propsFor([repo], [named, ...extra], services, new Map(), archived)} />)
+  return { services }
 }
 
 /** The unowned bucket's node, found by its header row. */
@@ -207,7 +220,7 @@ function bucket(): Element | null | undefined {
 
 /** The stored disclosure choices, as the mirror holds them. */
 function storedExpansion(): Record<string, boolean> {
-  return JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
+  return JSON.parse(localStorage.getItem(EXPANSION_STORAGE_KEY) ?? '{}') as Record<string, boolean>
 }
 
 describe('GroupedBrowser unowned bucket', () => {
@@ -243,6 +256,13 @@ describe('GroupedBrowser unowned bucket', () => {
     expect(bucket()?.querySelector('[data-row-key="session:spent-draft"]')).toBeNull()
   })
 
+  it('keeps a subagent child out of the bucket', async () => {
+    mountUnowned(fakeServices(), [sessionRow('loose'), sessionRow('spawned', { origin: 'subagent' })])
+    await screen.findByText(messages.ungroupedSessions)
+    expect(bucket()?.querySelector('[data-row-key="session:loose"]')).not.toBeNull()
+    expect(bucket()?.querySelector('[data-row-key="session:spawned"]')).toBeNull()
+  })
+
   it('follows the archived filter', async () => {
     mountUnowned(
       fakeServices(),
@@ -275,8 +295,7 @@ describe('GroupedBrowser unowned bucket', () => {
       expect(document.querySelector('[data-row-key="session:loose"]')).toBeNull()
     })
     // The bucket's key belongs to no workspace, so it is its own disclosure slot.
-    const stored = JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
-    expect(stored['u:unowned']).toBe(false)
+    expect(storedExpansion()['u:unowned']).toBe(false)
   })
 
   it('keeps its fold choice while a search hides every row of it', async () => {
@@ -298,7 +317,7 @@ describe('GroupedBrowser unowned bucket', () => {
 
   it('drops the fold choice once no unowned session is left', async () => {
     // The bucket is gone for good here, so its key is stale like any other.
-    localStorage.setItem('workspaceOrganize.expansion', JSON.stringify({ 'u:unowned': false }))
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ 'u:unowned': false }))
     mountUnowned(fakeServices(), [])
     await screen.findByText('Work')
     await waitFor(() => { expect(storedExpansion()['u:unowned']).toBeUndefined() })
@@ -308,7 +327,7 @@ describe('GroupedBrowser unowned bucket', () => {
     // A `pending` catalog is empty because it has not arrived, not because there
     // is nothing in it: pruning on it would drop a bucket choice a moment before
     // the rows that justify it show up.
-    localStorage.setItem('workspaceOrganize.expansion', JSON.stringify({ 'u:unowned': false }))
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ 'u:unowned': false }))
     render(<GroupedBrowser {...propsFor([workspaceView('repo', [])], [], fakeServices(), new Map(), [], 'pending')} />)
     await screen.findByText('Work')
     expect(storedExpansion()['u:unowned']).toBe(false)
@@ -378,6 +397,28 @@ describe('GroupedBrowser menus', () => {
     await waitFor(() => { expect(services.deleteWorkspace).toHaveBeenCalledWith('repo') })
   })
 
+  it('offers "move out of group" only where there is a group to leave', async () => {
+    mountBrowser()
+    // `other` belongs to no group, so the only entry that could address its
+    // placement is "move to group"; `repo` sits in `Work` and keeps both.
+    const ungroupedRow = (await screen.findByText('other')).closest('[data-row-key]') as Element
+    await userEvent.click(rowButtons(ungroupedRow)[0] as HTMLElement)
+    const menu = await screen.findByRole('menu', { hidden: true })
+    expect(within(menu).queryByText(messages.removeFromGroup)).toBeNull()
+    expect(within(menu).getByText(messages.moveToGroup)).toBeDefined()
+  })
+
+  it('gives a group name field the document cap', async () => {
+    // A longer name would make every save of the document a 400, which the tree
+    // could only show as a save that never settles.
+    mountBrowser()
+    await screen.findByText('Work')
+    await chooseViewOption(messages.newGroup)
+    const dialog = await screen.findByRole('dialog', { hidden: true })
+    const field = within(dialog).getByLabelText(messages.nameGroup) as HTMLInputElement
+    expect(field.getAttribute('maxlength')).toBe(String(MAX_GROUP_NAME_LENGTH))
+  })
+
   it('collapses every workspace from the view menu', async () => {
     mountBrowser()
     await screen.findByText('repo')
@@ -386,7 +427,7 @@ describe('GroupedBrowser menus', () => {
     const menu = await screen.findByRole('menu', { hidden: true })
     await userEvent.click(within(menu).getByText(messages.collapseAll))
     await waitFor(() => {
-      const stored = JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
+      const stored = storedExpansion()
       expect(stored['ws:repo']).toBe(false)
       expect(stored['g:g1']).toBe(false)
     })
@@ -395,7 +436,7 @@ describe('GroupedBrowser menus', () => {
   it('drops disclosure choices for nodes that no longer exist', async () => {
     // Keyed for a group and a workspace the catalog does not have: the mirror
     // must not accumulate them forever.
-    localStorage.setItem('workspaceOrganize.expansion', JSON.stringify({
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({
       'g:g1': true,
       'ws:repo': false,
       'g:deleted': true,
@@ -404,7 +445,7 @@ describe('GroupedBrowser menus', () => {
     mountBrowser()
     await screen.findByText('Work')
     await waitFor(() => {
-      const stored = JSON.parse(localStorage.getItem('workspaceOrganize.expansion') ?? '{}') as Record<string, boolean>
+      const stored = storedExpansion()
       expect(Object.keys(stored).toSorted()).toEqual(['g:g1', 'ws:repo'])
       expect(stored['g:g1']).toBe(true)
       expect(stored['ws:repo']).toBe(false)
@@ -443,6 +484,18 @@ async function chooseViewOption(label: string): Promise<void> {
   const menu = await screen.findByRole('menu', { hidden: true })
   await userEvent.click(within(menu).getByText(label))
   await waitFor(() => { expect(screen.queryByRole('menu', { hidden: true })).toBeNull() })
+}
+
+/**
+ * Create one group through the view menu and its dialog.
+ * @param name - the name to type into the field.
+ */
+async function createGroup(name: string): Promise<void> {
+  await chooseViewOption(messages.newGroup)
+  const dialog = await screen.findByRole('dialog', { hidden: true })
+  await userEvent.type(within(dialog).getByLabelText(messages.nameGroup), name)
+  await userEvent.click(within(dialog).getByText(messages.ok))
+  await waitFor(() => { expect(screen.queryByRole('dialog', { hidden: true })).toBeNull() })
 }
 
 describe('GroupedBrowser archived rows', () => {
@@ -514,7 +567,7 @@ describe('GroupedBrowser archived rows', () => {
     mountWithArchive()
     await screen.findByText('named')
     await chooseViewOption(messages.onlyArchived)
-    expect(localStorage.getItem('workspaceOrganize.archivedFilter')).toBe('only')
+    expect(localStorage.getItem(ARCHIVED_FILTER_STORAGE_KEY)).toBe('only')
   })
 
   it('archives a group counting only live, non-blank sessions', async () => {
@@ -552,5 +605,92 @@ describe('GroupedBrowser archived rows', () => {
       expect(services.archiveSession).toHaveBeenNthCalledWith(1, 'named')
       expect(services.archiveSession).toHaveBeenNthCalledWith(2, 'named', { stopActivity: true })
     })
+  })
+
+  it('reports a refused restore instead of leaving it unhandled', async () => {
+    const services = mountWithArchive()
+    services.unarchiveSession = vi.fn().mockRejectedValue(new Error('carrier down'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    await screen.findByText('named')
+    await chooseViewOption(messages.showArchived)
+    const row = document.querySelector('[data-row-key="session:gone"]') as Element
+    await userEvent.click(rowButtons(row)[0] as HTMLElement)
+    await waitFor(() => {
+      expect(warn).toHaveBeenCalledWith('workspace-organize: restore refused', 'gone', expect.any(Error))
+    })
+  })
+})
+
+/**
+ * A `fetch` double whose writes are held until the test settles them.
+ *
+ * The GET the browser opens with answers directly; each POST is recorded and left
+ * pending, so a test can decide the order the Host answers in — and see whether
+ * the client got that far at all.
+ * @returns the write bodies in issue order, and one settle function per write.
+ */
+function heldWrites() {
+  const bodies: string[] = []
+  const settles: Array<(ok: boolean) => void> = []
+  vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+    if (init?.method !== 'POST') {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ version: 1, groups: [{ id: 'g1', name: 'Work', workspaceIds: ['repo'] }] }),
+      })
+    }
+    bodies.push(String(init.body))
+    return new Promise((resolve) => { settles.push(ok => resolve({ ok })) })
+  }))
+  return { bodies, settles }
+}
+
+/** The group names of the writes issued so far, newest group of each document. */
+function writeNames(bodies: readonly string[]): Array<string | undefined> {
+  return bodies.map((body) => {
+    const doc = JSON.parse(body) as { groups: Array<{ name: string }> }
+    return doc.groups.at(-1)?.name
+  })
+}
+
+describe('GroupedBrowser saves', () => {
+  it('issues one write at a time, in the order the edits were made', async () => {
+    // The Host serializes by arrival, not by edit order, so two POSTs racing each
+    // other can commit an older document last. The second edit must wait.
+    const { bodies, settles } = heldWrites()
+    mountBrowser()
+    await screen.findByText('Work')
+    await createGroup('First')
+    await createGroup('Second')
+    expect(settles).toHaveLength(1)
+    await act(async () => { settles[0]?.(true) })
+    await waitFor(() => { expect(settles).toHaveLength(2) })
+    expect(writeNames(bodies)).toEqual(['First', 'Second'])
+  })
+
+  it('stops saying "saving" only when the last write answers', async () => {
+    const { settles } = heldWrites()
+    mountBrowser()
+    await screen.findByText('Work')
+    await createGroup('First')
+    await createGroup('Second')
+    // The first answer says nothing about the edit still waiting behind it.
+    await act(async () => { settles[0]?.(true) })
+    await waitFor(() => { expect(settles).toHaveLength(2) })
+    expect(document.querySelector('.dwo-saving')).not.toBeNull()
+    await act(async () => { settles[1]?.(true) })
+    await waitFor(() => { expect(document.querySelector('.dwo-saving')).toBeNull() })
+  })
+
+  it('keeps saying "saving" when the last write fails', async () => {
+    const { settles } = heldWrites()
+    mountBrowser()
+    await screen.findByText('Work')
+    await createGroup('First')
+    await createGroup('Second')
+    await act(async () => { settles[0]?.(true) })
+    await waitFor(() => { expect(settles).toHaveLength(2) })
+    await act(async () => { settles[1]?.(false) })
+    await waitFor(() => { expect(document.querySelector('.dwo-saving')).not.toBeNull() })
   })
 })

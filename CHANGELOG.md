@@ -16,6 +16,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Spawned subagent sessions no longer take a row of their own. The session
+  catalog carries them (`origin: 'subagent'`) and the shipped browser shows them
+  under their parent's header; the shadowing tree rendered them as ordinary rows
+  with their own archive verb, and a group-level archive would have archived
+  them. The rule now lives in `sessionShown`, so the rows, the group content
+  counts and the bulk operations cannot disagree about it again.
+- A refused restore is reported the way a refused archive is, instead of
+  surfacing as an unhandled rejection.
+- Group-document writes are queued in edit order. The Host serializes the writes it
+  receives by arrival, not by the order the edits were made, so two POSTs racing
+  each other could commit an older document last while the tree reported the newer
+  one saved. Saves now run one at a time through a client-side chain, and the save
+  indicator follows the newest queued write rather than whichever answered last.
+- `$DSH_HOME` is resolved the way the rest of the Host resolves it: a blank
+  override counts as unset, `~/…` expands against the OS home, and the result is
+  absolute. A raw read put this plugin's document under the process cwd (or a
+  directory literally named `~`) while every other DSH component kept reading
+  `~/.dsh`, where the tree then looked empty.
+- An oversized write body is answered `413` and a malformed one `400`. Both used
+  to answer `400 invalid json body`, blaming the JSON for the byte cap. The reader
+  stops the upload but leaves the socket open, so that answer can actually reach
+  the caller; the connection closes once it has gone out. A stream that fails
+  while the body is being read is neither: it keeps the ordinary 500 path instead
+  of being reported as an oversized body.
+- A group name cannot be typed past the document's own cap. The field carries
+  `maxLength`, so a name the Host would reject as an invalid document — which
+  the Client could only show as a save that never settles — is out of reach.
+- "Move out of group" is offered only for a Workspace that is in a group; an
+  ungrouped row used to carry an entry that could not change anything.
 - Archiving a session no longer makes it unreachable. The shadowing browser has
   no shipped browser behind it, so a hidden archived row had no way back; the
   archived branch of the session row (restore verb, archived styling,
@@ -63,6 +92,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   destinations once per snapshot rather than once per render site, and member
   lookup is a map instead of a linear scan, so a group tree no longer costs
   group × workspaces per render.
+- The render-order rule (retained placeholder first, archived rows last) is one
+  helper shared by both listings instead of two copies, and the bucket
+  vocabulary is the primitives' own `RelativeTimeUnit` rather than a duplicate
+  union. The bucketing itself stays local, and says so: importing the
+  primitives' runtime would drag the component library into every derivation.
+- The document's limits are named constants (`MAX_ID_LENGTH`,
+  `MAX_GROUP_NAME_LENGTH`) shared by the validator, the Client's field cap and
+  the tests, instead of 128 and 200 written out at each site.
+- Dead surface removed. `detectLocale`, `messagesFor` and the `Locale` type were
+  exported for nobody — this bundle renders one locale and publishes `messages`
+  — and `readBody`, the byte cap the write route depends on, is now covered
+  rather than merely exported.
+- `apply`'s group-move action is one implementation shared by every candidate
+  destination; it used to rebuild the whole document once per submenu row.
+- Tests: the Host's own boundaries (write fence, body cap, home resolution) moved
+  to `tests/host.spec.ts` so the contract spec is only the document's
+  specification; three near-identical body-cap measurements became one at the
+  document's true maximum; one duplicate listing assertion is gone; and the
+  browser spec reads the storage keys from the module instead of repeating their
+  literals.
 - The package declares `"icon": "./icon.svg"`, the form every shipped bundle
   uses, and two dev dependencies nothing imported are gone.
 - CI checks that the client bundle requests only the shell's baseline modules.

@@ -113,6 +113,15 @@ describe('sessionShown', () => {
     expect(sessionShown(row('live'), id('live'), undefined, archiveSet, 'only')).toBe(false)
   })
 
+  it('hides a subagent child, which its parent header shows instead', () => {
+    const child = row('child', { origin: 'subagent', parentId: id('named') })
+    expect(sessionShown(child, child.id, undefined, new Set())).toBe(false)
+    // Origin is the first rule, exactly as in the shipped derivation: not even a
+    // retained child — or the archived filter — can bring a child row back.
+    expect(sessionShown(child, child.id, child.id, new Set(), 'show')).toBe(false)
+    expect(sessionShown(child, child.id, undefined, new Set([child.id]), 'only')).toBe(false)
+  })
+
   it('keeps the visible placeholder unless the view asks for archived rows alone', () => {
     // The shipped `sessionVisible` applies the archived filter last, so the
     // placeholder shows under `default` and `show` and drops out of `only` —
@@ -146,6 +155,17 @@ describe('visibleSessionIds', () => {
 
   it('separates rows that hold content from the placeholder', () => {
     expect(contentSessionIds(selection(sessions, target))).toEqual(['named'])
+  })
+
+  it('leaves a subagent child out of the listing and out of the content count', () => {
+    // A child is shown by its parent's header, so it is neither a row of its own
+    // nor something a group-level archive may act on.
+    const child = row('child', { origin: 'subagent' })
+    const withChild = list([named, child])
+    const childWorkspace = workspace('repo', ['named', 'child'])
+    const childSelection = selection(withChild, childWorkspace)
+    expect(visibleSessionIds(childSelection)).toEqual(['named'])
+    expect(contentSessionIds(childSelection)).toEqual(['named'])
   })
 })
 
@@ -226,11 +246,6 @@ describe('unownedSessionIds', () => {
     expect(unowned()).toEqual(['blank-current', 'loose-new', 'loose-tied', 'loose-old'])
   })
 
-  it('leads with the retained placeholder but still hides a spent draft', () => {
-    expect(unowned()).toContain('blank-current')
-    expect(unowned()).not.toContain('blank-spent')
-  })
-
   it('matches a query on the title, and never on a blank placeholder', () => {
     expect(unowned('beta')).toEqual(['loose-new'])
     expect(unowned('note')).toEqual(['loose-new', 'loose-tied', 'loose-old'])
@@ -250,6 +265,11 @@ describe('unownedSessionIds', () => {
 
   it('is empty when every session has a workspace', () => {
     expect(unownedSessionIds(list([owned]), [target], undefined, new Set(), '')).toEqual([])
+  })
+
+  it('leaves a subagent child out of the bucket', () => {
+    const child = row('loose-child', { origin: 'subagent', updatedAt: 60 })
+    expect(unownedSessionIds(list([child, owned]), [target], undefined, new Set(), '')).toEqual([])
   })
 })
 

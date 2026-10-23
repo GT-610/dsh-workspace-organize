@@ -45,12 +45,22 @@ export function mainSessionId(list: SessionListState): SessionId | undefined {
 /**
  * Whether one session renders as a row at all.
  *
- * Ordinary sessions do. A blank one is a provisional New Session that nothing
- * has been sent to yet, and the shipped derivation (`sessionVisible` in
- * ui-workspace's `tree.ts`) keeps exactly one: the one the main view holds.
- * Every other blank stays out of the list — those are the drafts left behind by
- * earlier "new session" clicks, and rendering them put a row named after each
- * workspace's directory in the tree.
+ * Ordinary sessions do. Two classes do not, and both are excluded here rather
+ * than at each call site so that the rows, the group content counts and the
+ * group-level operations cannot disagree about what "a session in this group"
+ * is:
+ *
+ * A blank one is a provisional New Session that nothing has been sent to yet,
+ * and the shipped derivation (`sessionVisible` in ui-workspace's `tree.ts`)
+ * keeps exactly one: the one the main view holds. Every other blank stays out of
+ * the list — those are the drafts left behind by earlier "new session" clicks,
+ * and rendering them put a row named after each workspace's directory in the
+ * tree.
+ *
+ * A subagent child is shown by its parent's own header, never as a top-level
+ * row. `SessionListState` carries them (`origin: 'subagent'`), so without this
+ * rule a spawned child would appear as an ordinary row — and a group-level
+ * archive would archive it.
  *
  * Archived rows follow the filter, exactly as they do in the shipped browser:
  * hidden by default, shown beside the rest, or shown alone.
@@ -69,12 +79,41 @@ export function sessionShown(
   archivedFilter: ArchivedFilter = 'default',
 ): boolean {
   if (row === undefined) return false
+  if (row.origin === 'subagent') return false
   if (row.blank && id !== main) return false
   switch (archivedFilter) {
     case 'default': return !archived.has(id)
     case 'show': return true
     case 'only': return archived.has(id)
   }
+}
+
+/**
+ * Put surviving rows in the browser's render order.
+ *
+ * One rule serves every listing: the retained placeholder leads, archived rows
+ * trail the live ones — where the shipped manual order keeps them — and each
+ * partition keeps the caller's order. Because it holds for search results too,
+ * a match from the archive never outranks a live one.
+ * @param ids - ids that survived the visibility rule, in caller order.
+ * @param main - the retained session id.
+ * @param archived - registry-global archive set.
+ * @returns the same ids, placeholder first, archived last.
+ */
+function partitionRows(
+  ids: readonly SessionId[],
+  main: SessionId | undefined,
+  archived: ReadonlySet<SessionId>,
+): SessionId[] {
+  const leading: SessionId[] = []
+  const live: SessionId[] = []
+  const spent: SessionId[] = []
+  for (const id of ids) {
+    if (id === main) leading.push(id)
+    else if (archived.has(id)) spent.push(id)
+    else live.push(id)
+  }
+  return [...leading, ...live, ...spent]
 }
 
 /** What one list derivation reads. */
@@ -103,8 +142,7 @@ export interface SessionSelection {
  *
  * Two partitions apply to whatever the filter and query leave: the placeholder
  * leads, and archived rows trail the live ones — where the shipped manual order
- * keeps them. Both hold for search results as well, so a match from the archive
- * never outranks a live one.
+ * keeps them. {@link partitionRows} owns both.
  * @param selection - the snapshots and query to read.
  * @returns visible session ids, placeholder first, archived last.
  */
@@ -119,15 +157,7 @@ export function visibleSessionIds(selection: SessionSelection): SessionId[] {
         if (row === undefined || row.blank) return false
         return row.displayTitle.toLowerCase().includes(query)
       })
-  const leading: SessionId[] = []
-  const live: SessionId[] = []
-  const spent: SessionId[] = []
-  for (const id of matched) {
-    if (id === main) leading.push(id)
-    else if (archived.has(id)) spent.push(id)
-    else live.push(id)
-  }
-  return [...leading, ...live, ...spent]
+  return partitionRows(matched, main, archived)
 }
 
 /**
@@ -142,9 +172,9 @@ export function visibleSessionIds(selection: SessionSelection): SessionId[] {
  *
  * The order is the shipped bucket's own: newest first with Session identity as
  * the deterministic tie-break, since this plugin keeps no manual order. The
- * partitions are a Workspace listing's, so both read alike: the retained
- * placeholder leads, archived rows trail live ones, and search narrows each
- * without reordering it.
+ * partitions are a Workspace listing's ({@link partitionRows}), so both read
+ * alike: the retained placeholder leads, archived rows trail live ones, and
+ * search narrows each without reordering it.
  * @param list - sessions list snapshot; its `ids` are the catalog's membership.
  * @param workspaces - authoritative Workspace membership.
  * @param main - the retained session id, from {@link mainSessionId}.
@@ -181,15 +211,7 @@ export function unownedSessionIds(
       if (at !== other) return other - at
       return left < right ? -1 : left > right ? 1 : 0
     })
-  const leading: SessionId[] = []
-  const live: SessionId[] = []
-  const spent: SessionId[] = []
-  for (const id of shown) {
-    if (id === main) leading.push(id)
-    else if (archived.has(id)) spent.push(id)
-    else live.push(id)
-  }
-  return [...leading, ...live, ...spent]
+  return partitionRows(shown, main, archived)
 }
 
 /**
@@ -282,8 +304,16 @@ export function groupRollUp(
 }
 
 /**
- * Compact relative-time bucketing, shared with the shipped rows so two surfaces
- * dating the same session never disagree.
+ * Compact relative-time bucketing, mirroring `relativeTime` from
+ * `@deepseek-ai/dsh-client-ui-primitives` so the two surfaces dating the same
+ * session never disagree.
+ *
+ * The boundaries are restated rather than imported on purpose: this module is
+ * the dependency-free half of the Client, and the primitives' runtime entry
+ * cannot load outside the shell's own module table, so importing it would drag
+ * the whole component library into every derivation. Only the boundaries can
+ * drift — the bucket vocabulary itself is the primitives' own
+ * ({@link TimeBucket} is `RelativeTimeUnit`), and `select.spec.ts` pins them.
  * @param at - epoch ms of the dated moment.
  * @param now - current epoch ms.
  * @returns the bucket plus its magnitude (0 for "now").

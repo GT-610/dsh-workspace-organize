@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 //#region src/shared/contract.ts
 /**
 * The group document: the only state this plugin owns.
@@ -95,6 +95,33 @@ function normalizeGroupDocument(raw) {
 /** Activation waits for the web carrier so the route registers on first boot. */
 const inject = ["webServer"];
 /**
+* Expand the one tilde prefix the harness accepts in a configured path.
+* @param path - configured path, possibly starting with `~`, `~/`, or `~\`.
+* @returns the expanded path, or the input unchanged when it has no prefix.
+*/
+function expandHomePath(path) {
+	if (path === "~") return homedir();
+	if (path.startsWith("~/") || path.startsWith("~\\")) return join(homedir(), path.slice(2));
+	return path;
+}
+/**
+* Resolve the DeepSeek Harness home exactly as the rest of the Host does
+* (`@deepseek-ai/dsh-home-paths`' `resolveDshHome`).
+*
+* Reading `DSH_HOME` raw would diverge in three ways that matter here: a blank
+* override would resolve this plugin's storage to a `storages` directory under
+* the process cwd instead of `~/.dsh`, a `~/…` override would be taken
+* literally and create a directory named `~`, and a relative one would keep
+* depending on the cwd. The document would then land outside the tree every
+* other DSH component reads, and look lost.
+* @param env - environment to read; defaults to the process environment.
+* @returns the absolute harness home.
+*/
+function resolveDshHome(env = process.env) {
+	const configured = env.DSH_HOME;
+	return resolve(configured !== void 0 && configured.trim().length > 0 ? expandHomePath(configured) : join(homedir(), ".dsh"));
+}
+/**
 * Whether a write request comes from the same origin as the page that serves
 * this route. Browsers always attach `Sec-Fetch-Site` (modern) or `Origin`;
 * a request carrying neither is not a browser form/JSON POST we should accept.
@@ -113,26 +140,50 @@ function sameOriginWrite(req) {
 	return false;
 }
 /**
+* A body past {@link MAX_DOCUMENT_BYTES}, as distinct from a stream failure.
+*
+* The route has to tell the two apart: only a cap refusal is a `413` on a
+* connection it must close itself, while a broken stream is not a fact about the
+* body's size and belongs to the ordinary 500 path, where it is logged.
+*/
+var BodyTooLargeError = class extends Error {
+	name = "BodyTooLargeError";
+};
+/**
 * Read one request body with the byte cap.
+*
+* An oversize body stops the read and leaves the request paused rather than
+* destroyed: the route answers `413` on that same socket and closes it once the
+* answer is out, which it could not do on a connection this function had already
+* torn down.
 * @param req - incoming request.
 * @returns the decoded body.
-* @throws when the body exceeds {@link MAX_DOCUMENT_BYTES}.
+* @throws {BodyTooLargeError} when the body exceeds {@link MAX_DOCUMENT_BYTES};
+* the caller owns the connection from then on.
+* @throws the stream's own error when reading the body fails.
 */
 function readBody(req) {
 	return new Promise((resolve, reject) => {
 		const chunks = [];
 		let size = 0;
+		let refused = false;
 		req.on("data", (chunk) => {
+			if (refused) return;
 			size += chunk.length;
 			if (size > 2097152) {
-				reject(/* @__PURE__ */ new Error("body too large"));
-				req.destroy();
+				refused = true;
+				req.pause();
+				reject(new BodyTooLargeError("body too large"));
 				return;
 			}
 			chunks.push(chunk);
 		});
-		req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-		req.on("error", reject);
+		req.on("end", () => {
+			if (!refused) resolve(Buffer.concat(chunks).toString("utf8"));
+		});
+		req.on("error", (error) => {
+			if (!refused) reject(error);
+		});
 	});
 }
 /**
@@ -146,7 +197,7 @@ function apply(ctx) {
 		ctx.logger.warn("workspace-organize: webServer service is unavailable; groups stay browser-local");
 		return;
 	}
-	const home = process.env.DSH_HOME ?? join(homedir(), ".dsh");
+	const home = resolveDshHome();
 	const dir = join(home, "storages");
 	const file = join(dir, GROUP_STORAGE_FILE);
 	let cache;
@@ -194,9 +245,19 @@ function apply(ctx) {
 				reply(403, { error: "cross-origin write refused" });
 				return;
 			}
+			let body;
+			try {
+				body = await readBody(req);
+			} catch (error) {
+				if (!(error instanceof BodyTooLargeError)) throw error;
+				res.setHeader("connection", "close");
+				res.once("finish", () => req.destroy());
+				reply(413, { error: "body too large" });
+				return;
+			}
 			let raw;
 			try {
-				raw = JSON.parse(await readBody(req));
+				raw = JSON.parse(body);
 			} catch {
 				reply(400, { error: "invalid json body" });
 				return;
@@ -221,6 +282,6 @@ function apply(ctx) {
 	});
 }
 //#endregion
-export { apply, inject, readBody, sameOriginWrite };
+export { apply, inject, readBody, resolveDshHome, sameOriginWrite };
 
 //# sourceMappingURL=index.js.map
