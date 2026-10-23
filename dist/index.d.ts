@@ -34,8 +34,9 @@ declare function sameOriginWrite(req: IncomingMessage): boolean;
  * torn down.
  * @param req - incoming request.
  * @returns the decoded body.
- * @throws when the body exceeds {@link MAX_DOCUMENT_BYTES}; the caller owns the
- * connection from then on.
+ * @throws {BodyTooLargeError} when the body exceeds {@link MAX_DOCUMENT_BYTES};
+ * the caller owns the connection from then on.
+ * @throws the stream's own error when reading the body fails.
  */
 declare function readBody(req: IncomingMessage): Promise<string>;
 /**

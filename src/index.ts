@@ -88,6 +88,17 @@ export function sameOriginWrite(req: IncomingMessage): boolean {
 }
 
 /**
+ * A body past {@link MAX_DOCUMENT_BYTES}, as distinct from a stream failure.
+ *
+ * The route has to tell the two apart: only a cap refusal is a `413` on a
+ * connection it must close itself, while a broken stream is not a fact about the
+ * body's size and belongs to the ordinary 500 path, where it is logged.
+ */
+class BodyTooLargeError extends Error {
+  override readonly name = 'BodyTooLargeError'
+}
+
+/**
  * Read one request body with the byte cap.
  *
  * An oversize body stops the read and leaves the request paused rather than
@@ -96,8 +107,9 @@ export function sameOriginWrite(req: IncomingMessage): boolean {
  * torn down.
  * @param req - incoming request.
  * @returns the decoded body.
- * @throws when the body exceeds {@link MAX_DOCUMENT_BYTES}; the caller owns the
- * connection from then on.
+ * @throws {BodyTooLargeError} when the body exceeds {@link MAX_DOCUMENT_BYTES};
+ * the caller owns the connection from then on.
+ * @throws the stream's own error when reading the body fails.
  */
 export function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -113,7 +125,7 @@ export function readBody(req: IncomingMessage): Promise<string> {
       if (size > MAX_DOCUMENT_BYTES) {
         refused = true
         req.pause()
-        reject(new Error('body too large'))
+        reject(new BodyTooLargeError('body too large'))
         return
       }
       chunks.push(chunk)
@@ -199,12 +211,12 @@ export function apply(ctx: Context): (() => void) | undefined {
       let body: string
       try {
         body = await readBody(req)
-      } catch {
-        // The byte cap is the only reason a read rejects, and that body was
-        // abandoned unparsed: an oversize request is a 413, never a malformed one.
-        // The reader left the upload paused instead of closing the connection, so
-        // this answer can still reach the caller; the socket goes after it, at
-        // which point the rest of the body is no longer worth reading.
+      } catch (error) {
+        // Only the cap is a fact about the body's size: a stream failure rethrows
+        // to the route's own 500 path. The reader left this upload paused rather
+        // than closing the connection, so the 413 can still reach the caller; the
+        // socket goes once that answer is out.
+        if (!(error instanceof BodyTooLargeError)) throw error
         res.setHeader('connection', 'close')
         res.once('finish', () => req.destroy())
         reply(413, { error: 'body too large' })

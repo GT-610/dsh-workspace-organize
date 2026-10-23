@@ -37,7 +37,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - An oversized write body is answered `413` and a malformed one `400`. Both used
   to answer `400 invalid json body`, blaming the JSON for the byte cap. The reader
   stops the upload but leaves the socket open, so that answer can actually reach
-  the caller; the connection closes once it has gone out.
+  the caller; the connection closes once it has gone out. A stream that fails
+  while the body is being read is neither: it keeps the ordinary 500 path instead
+  of being reported as an oversized body.
 - A group name cannot be typed past the document's own cap. The field carries
   `maxLength`, so a name the Host would reject as an invalid document — which
   the Client could only show as a save that never settles — is out of reach.

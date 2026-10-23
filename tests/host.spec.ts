@@ -83,12 +83,25 @@ describe('readBody', () => {
     const req = new RequestStream()
     const pending = readBody(req as unknown as IncomingMessage)
     req.emit('data', Buffer.alloc(MAX_DOCUMENT_BYTES + 1))
-    await expect(pending).rejects.toThrow('body too large')
+    // A distinguishable error: the route answers 413 for this one, and anything
+    // else the stream can fail with keeps the 500 path.
+    await expect(pending).rejects.toMatchObject({ name: 'BodyTooLargeError', message: 'body too large' })
     // The upload stops, but the connection stays open: the route answers 413 on
     // this socket and closes it once that answer is out, which it could not do on
     // a connection the reader had already destroyed.
     expect(req.paused).toBe(true)
     expect(req.destroyed).toBe(false)
+  })
+
+  it('surfaces a stream failure as that failure, not as the cap', async () => {
+    const req = new RequestStream()
+    const pending = readBody(req as unknown as IncomingMessage)
+    req.emit('data', Buffer.from('{"version":1'))
+    req.emit('error', new Error('aborted'))
+    // Size says nothing about a connection that died mid-read, so this is not a
+    // 413: the original failure is what the route logs.
+    await expect(pending).rejects.toThrow('aborted')
+    expect(req.paused).toBe(false)
   })
 
   it('takes a body of exactly the cap', async () => {

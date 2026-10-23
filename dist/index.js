@@ -140,6 +140,16 @@ function sameOriginWrite(req) {
 	return false;
 }
 /**
+* A body past {@link MAX_DOCUMENT_BYTES}, as distinct from a stream failure.
+*
+* The route has to tell the two apart: only a cap refusal is a `413` on a
+* connection it must close itself, while a broken stream is not a fact about the
+* body's size and belongs to the ordinary 500 path, where it is logged.
+*/
+var BodyTooLargeError = class extends Error {
+	name = "BodyTooLargeError";
+};
+/**
 * Read one request body with the byte cap.
 *
 * An oversize body stops the read and leaves the request paused rather than
@@ -148,8 +158,9 @@ function sameOriginWrite(req) {
 * torn down.
 * @param req - incoming request.
 * @returns the decoded body.
-* @throws when the body exceeds {@link MAX_DOCUMENT_BYTES}; the caller owns the
-* connection from then on.
+* @throws {BodyTooLargeError} when the body exceeds {@link MAX_DOCUMENT_BYTES};
+* the caller owns the connection from then on.
+* @throws the stream's own error when reading the body fails.
 */
 function readBody(req) {
 	return new Promise((resolve, reject) => {
@@ -162,7 +173,7 @@ function readBody(req) {
 			if (size > 2097152) {
 				refused = true;
 				req.pause();
-				reject(/* @__PURE__ */ new Error("body too large"));
+				reject(new BodyTooLargeError("body too large"));
 				return;
 			}
 			chunks.push(chunk);
@@ -237,7 +248,8 @@ function apply(ctx) {
 			let body;
 			try {
 				body = await readBody(req);
-			} catch {
+			} catch (error) {
+				if (!(error instanceof BodyTooLargeError)) throw error;
 				res.setHeader("connection", "close");
 				res.once("finish", () => req.destroy());
 				reply(413, { error: "body too large" });
