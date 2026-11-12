@@ -121,6 +121,7 @@ export function Menu({ open, anchor, items = [], selectedId, onSelect, onClose }
                   type="button"
                   role="menuitem"
                   aria-current={selectedId === item.id ? 'true' : undefined}
+                  disabled={item.disabled}
                   onClick={() => onSelect?.(item.id)}
                 >
                   {item.icon}

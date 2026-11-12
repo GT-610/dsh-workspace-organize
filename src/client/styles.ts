@@ -18,6 +18,7 @@ export const STYLES = `
 .dwo-head-label { flex:none; max-width:45%; min-width:0; overflow:hidden; white-space:nowrap; line-height:20px; transition:max-width 180ms var(--ds-ease-in-out,ease), opacity 120ms var(--ds-ease-in-out,ease); }
 .dwo-head-label.hidden { max-width:0; opacity:0; }
 .dwo-saving { flex:none; opacity:.6; }
+.dwo-save-failed { color:var(--dsw-alias-state-warning-primary,#c27c00); font-weight:700; }
 .dwo-icon-btn { flex:none; display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border:none; border-radius:var(--dsw-radius-sm,8px); padding:0; background:transparent; cursor:pointer; color:var(--dsw-alias-label-secondary); }
 .dwo-icon-btn:hover { background:var(--dsw-alias-interactive-bg-hover); }
 .dwo-search-slot { flex:1; max-width:28px; min-width:0; display:flex; align-items:center; margin-left:auto; box-sizing:border-box; transition:max-width 180ms var(--ds-ease-in-out,ease); }
@@ -28,19 +29,16 @@ export const STYLES = `
 .dwo-search-input::placeholder { color:var(--dsw-alias-label-tertiary); }
 .dwo-head-actions { flex:none; display:flex; align-items:center; gap:4px; max-width:60px; overflow:hidden; transition:max-width 180ms var(--ds-ease-in-out,ease), opacity 120ms var(--ds-ease-in-out,ease); }
 .dwo-head-actions.hidden { max-width:0; opacity:0; pointer-events:none; }
-.dwo-browse.rail .dwo-header { gap:0; padding-left:0; margin-bottom:12px; justify-content:flex-start; }
+.dwo-browse.rail .dwo-header { gap:0; padding-left:0; margin-bottom:4px; justify-content:flex-start; }
+.dwo-rail-search { flex:none; display:flex; padding-left:0; margin-bottom:12px; }
 .dwo-browse.rail .dwo-icon-btn { width:36px; height:36px; border-radius:var(--dsw-radius-md,12px); color:var(--dsw-alias-label-primary); }
-.dwo-browse.rail .dwo-head-label { display:none; }
-.dwo-browse.rail .dwo-head-actions { max-width:none; }
-.dwo-browse.rail .dwo-search-slot { max-width:36px; }
-.dwo-browse.rail .dwo-search, .dwo-browse.rail .dwo-search-btn { width:36px; height:36px; border-radius:var(--dsw-radius-md,12px); }
 
 .dwo-list { flex:1; min-height:0; overflow-y:auto; margin-left:-4px; margin-right:var(--dwo-scrollbar-off); padding-left:4px; padding-right:calc(var(--dsh-session-list-edge-inset) - var(--dwo-scrollbar-w) - var(--dwo-scrollbar-off)); padding-bottom:16px; scrollbar-gutter:stable; }
-.dwo-browse.rail .dwo-list { margin-left:0; margin-right:0; padding-left:0; padding-right:0; }
 .dwo-sep { margin:10px 8px 4px; font-size:11px; line-height:15px; color:var(--dsw-alias-label-tertiary); }
 
 .dwo-row { display:flex; align-items:center; gap:6px; box-sizing:border-box; border-radius:var(--dsw-radius-md,12px); padding:0 8px; padding-inline-start:calc(8px + var(--dsh-workspace-indent,0px)); cursor:pointer; user-select:none; color:var(--dsw-alias-label-primary); }
 .dwo-row:hover, .dwo-row.menu-open { background:var(--dsw-alias-interactive-bg-hover); }
+.dwo-row:focus-visible, .dwo-icon-btn:focus-visible, .dwo-act-btn:focus-visible { outline:2px solid var(--dsw-alias-state-business-primary); outline-offset:-2px; }
 .dwo-ws-row, .dwo-group-row { height:34px; }
 .dwo-session-row { height:32px; gap:0; }
 .dwo-group-node + .dwo-group-node, .dwo-ws-node + .dwo-ws-node { margin-top:2px; }
@@ -73,6 +71,17 @@ export const STYLES = `
 .dwo-act-btn { flex:none; display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border:none; border-radius:var(--dsw-radius-xs,4px); padding:0; background:transparent; cursor:pointer; color:var(--dsw-alias-label-tertiary); }
 .dwo-act-btn:hover { color:var(--dsw-alias-label-primary); }
 .dwo-row:hover .dwo-time, .dwo-row.menu-open .dwo-time, .dwo-row:hover .dwo-count, .dwo-row.menu-open .dwo-count { display:none; }
+
+.dwo-activity { margin:8px 0 0; padding-left:18px; font-size:13px; line-height:20px; color:var(--dsw-alias-label-secondary); }
+.dwo-dialog-error { margin-top:8px; font-size:12px; line-height:17px; color:var(--dsw-alias-state-danger-primary,#c62828); }
+
+/* A touch device has no hover: keep every row verb reachable. */
+@media (hover: none) {
+  .dwo-actions { display:inline-flex; }
+  .dwo-row .dwo-time, .dwo-row .dwo-count { display:none; }
+  .dwo-ws-row .dwo-chev { display:inline-flex; }
+  .dwo-ws-row .dwo-folder { display:none; }
+}
 
 
 `

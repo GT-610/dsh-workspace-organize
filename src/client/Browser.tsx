@@ -31,7 +31,8 @@ import {
   type MenuEntry,
   type MenuItem,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import { workspaceDisplayTitle } from '@deepseek-ai/dsh-api-workspace-controller/default-workspace'
+import type { SessionActivity, WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { MAX_GROUP_NAME_LENGTH, type WorkspaceGroup } from '../shared/contract.ts'
@@ -48,12 +49,13 @@ import {
   saveGroupDocument,
   type ExpansionState,
 } from './groups.ts'
-import { messages } from './i18n.ts'
+import { messagesFrom, type Messages } from './i18n.ts'
 import {
   contentSessionIds,
   groupRollUp,
   mainSessionId,
   rowStatus,
+  runningSubagentCount,
   sessionShown,
   timeLabel,
   unownedSessionIds,
@@ -69,9 +71,26 @@ type Dialog =
   | { kind: 'renameGroup'; groupId: string; current: string }
   | { kind: 'renameWorkspace'; workspaceId: WorkspaceId; current: string }
   | { kind: 'renameSession'; sessionId: SessionId; current: string }
-  | { kind: 'archiveGroup'; groupId: string; name: string; count: number }
-  | { kind: 'deleteGroupWorkspaces'; groupId: string; name: string; count: number }
+  | {
+    kind: 'archiveGroup'
+    groupId: string
+    name: string
+    /** Sessions the confirmation counted, frozen at open time. */
+    targets: readonly SessionId[]
+    /** How many of them were running when the dialog opened. */
+    running: number
+    /** Targets whose running work the operator agreed to stop. */
+    stopIds: readonly SessionId[]
+  }
+  | {
+    kind: 'deleteGroupWorkspaces'
+    groupId: string
+    name: string
+    /** Workspace ids the confirmation counted, frozen at open time. */
+    workspaceIds: readonly string[]
+  }
   | { kind: 'deleteWorkspace'; workspaceId: WorkspaceId; title: string }
+  | { kind: 'archiveSession'; sessionId: SessionId; title: string; activity: readonly SessionActivity[] }
 
 /** One open row menu: where it points and what each row does. */
 interface OpenMenu {
@@ -101,6 +120,44 @@ function indent(depth: number): CSSProperties {
 }
 
 /**
+ * The running work a Host archive refusal reported, if that is what failed.
+ *
+ * The Host answers `workspace/session-active` when a Session still has a turn,
+ * subagent, job, or schedule running, and names the families in the error
+ * details. The shipped browser asks before stopping them; doing the same here is
+ * why the refusal is read rather than retried blindly.
+ * @param error - the rejection from `archiveSession`.
+ * @returns the activity list, or `undefined` for any other failure.
+ */
+function activeSessionRefusal(error: unknown): readonly SessionActivity[] | undefined {
+  if (!(error instanceof Error) || error.name !== 'WorkspaceArchiveError') return undefined
+  const rpc = (error as Error & {
+    rpcError?: { code?: string; details?: { activity?: readonly SessionActivity[] } }
+  }).rpcError
+  return rpc?.code === 'workspace/session-active' ? rpc.details?.activity ?? [] : undefined
+}
+
+/**
+ * Name one activity family in the stop-and-archive confirmation.
+ * @param activity - one family the Host reported.
+ * @param messages - copy for the family and its count.
+ * @returns the localized line.
+ */
+function activityLine(activity: SessionActivity, messages: Messages): string {
+  const count = activity.items?.length ?? 1
+  // The kind union is merged by other packages; this plugin only compiles the
+  // augmentations it imports, so compare as a string and keep the default line.
+  const kind: string = activity.kind
+  switch (kind) {
+    case 'turn': return messages.activityTurn
+    case 'subagent': return messages.activitySubagent(count)
+    case 'job': return messages.activityJob(count)
+    case 'schedule': return messages.activitySchedule(count)
+    default: return messages.activityOther(count)
+  }
+}
+
+/**
  * Disclosure key of the bucket for Sessions no Workspace accounts for.
  *
  * Deliberately outside the `g:` and `ws:` id spaces: the bucket has no id of its
@@ -114,8 +171,11 @@ const UNOWNED_KEY = 'u:unowned'
  * @returns the browsing region.
  */
 export function GroupedBrowser(props: OrganizeBrowserProps) {
-  const { wide, services } = props
+  const { wide, expandSidebar, services, t } = props
   const { useWorkspaces, useSessions, useSessionStatus } = props
+  // Built on every render: the bound `t` keeps a stable identity across a
+  // language switch, so memoizing on it would keep the previous language.
+  const messages = messagesFrom(t)
 
   // The standard kit hands out selector HOOKS (bound observable sources), not
   // raw sources: call them directly, exactly like the shipped browser.
@@ -125,6 +185,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const panelActive = props.usePanelInfo(info => info.activePanelId !== null)
 
   const workspaces = workspaceSnapshot.items
+  /** The title the shipped browser shows for one Workspace. */
+  const workspaceLabel = (workspace: { title: string }): string =>
+    workspaceDisplayTitle(workspace.title, messages.defaultWorkspace)
   const workspaceReady = workspaceSnapshot.phase === 'ready' && workspaceSnapshot.state !== 'loading'
   // `pending` is a catalog that has not arrived yet, and an absent row proves
   // nothing while it is on the way: the phase is monotone, so `ready` is when an
@@ -147,6 +210,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const [dialog, setDialog] = useState<Dialog | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [hostSaved, setHostSaved] = useState(true)
+  const [saveFailed, setSaveFailed] = useState(false)
   /**
    * The client's write chain: each save starts after the previous one settles.
    *
@@ -158,12 +222,26 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
    * answers then arrive in edit order, the last one is the state to show.
    */
   const writeTail = useRef<Promise<boolean>>(Promise.resolve(true))
+  /** Newest document, kept for the retry control after a refused save. */
+  const lastDocument = useRef<WorkspaceGroup[] | undefined>(undefined)
+  /**
+   * Whether the stored document has arrived.
+   *
+   * A ref, not state, because `persist` must read it without changing identity:
+   * an edit that lands before the load resolves would otherwise POST a document
+   * built on an empty `currentGroups` and replace every stored group with it.
+   */
+  const loadedRef = useRef(false)
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
     let live = true
     void loadGroupDocument().then((doc) => {
-      if (live) setGroups(doc.groups)
+      if (!live) return
+      lastDocument.current = doc.groups
+      // Set before the state update: the next event may already persist.
+      loadedRef.current = true
+      setGroups(doc.groups)
     })
     return () => { live = false }
   }, [])
@@ -175,17 +253,30 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   }, [])
 
   const persist = useCallback((next: WorkspaceGroup[]) => {
+    // An edit made while the document is still loading cannot be applied
+    // safely: it would overwrite the stored groups it has not seen yet.
+    if (!loadedRef.current) return
+    lastDocument.current = next
     setGroups(next)
     setHostSaved(false)
+    setSaveFailed(false)
     const run = writeTail.current.then(() => saveGroupDocument({ version: 1, groups: next }))
     writeTail.current = run
     // Only the newest queued save reports: an earlier answer says nothing about
     // the edit still waiting behind it, and clearing the indicator on it would
     // claim a write that has not happened yet.
     void run.then((ok) => {
-      if (writeTail.current === run) setHostSaved(ok)
+      if (writeTail.current !== run) return
+      setHostSaved(ok)
+      setSaveFailed(!ok)
     })
   }, [])
+
+  /** Re-send the newest document after the Host refused it. */
+  const retrySave = useCallback(() => {
+    const next = lastDocument.current
+    if (next !== undefined) persist(next)
+  }, [persist])
 
   /**
    * Drop members whose Workspace no longer exists.
@@ -210,9 +301,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       })
       return changed ? next : current
     })
-    // `groups` is read only as the "loaded yet?" guard; including it would rerun
-    // this pruning on every edit the effect itself makes.
-  }, [workspaceReady, workspaces, groups])
+    // The boolean, not `groups`: the document itself is read through the
+    // functional update below, so an edit does not rerun this pruning.
+  }, [workspaceReady, workspaces, groups !== undefined])
 
   const normalizedQuery = query.trim().toLowerCase()
 
@@ -275,6 +366,21 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     if (currentSessionId === undefined) return undefined
     return workspaces.find(workspace => workspace.sessionIds.includes(currentSessionId))?.workspaceId
   }, [currentSessionId, workspaces])
+
+  /**
+   * Whether one Session counts as running to its row and its group.
+   *
+   * The unified status is authoritative once it has an entry; otherwise the
+   * summary's running flag stands in. A Session whose own turn is idle but whose
+   * subagents still run is running too — the shipped browser counts that as
+   * ongoing.
+   */
+  const isRunning = useCallback((sessionId: SessionId): boolean => {
+    const status = statuses.get(sessionId)
+    return (status?.running ?? list.byId[sessionId]?.running) === true
+      || status?.pendingInteraction !== undefined
+      || runningSubagentCount(list, sessionId, statuses) > 0
+  }, [list, statuses])
 
   // Sessions no Workspace accounts for. The shipped browser trails them in its
   // own `Ungrouped` bucket, which disappears with the browser this entry
@@ -424,20 +530,29 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       sessionShown(list.byId[sessionId], sessionId, main, archived, 'only')))
 
   /**
-   * Archive one Session, retrying once through the stop-then-archive path.
+   * Archive one Session, asking before anything running is stopped.
    *
-   * The Host refuses to archive a Session with running work, and that refusal is
-   * the only failure worth a second attempt: the retry asks it to stop the work
-   * first. Every other failure is reported and left alone.
+   * The Host refuses to archive a Session with running work and reports what is
+   * running. That refusal is the only case worth a second attempt, and the
+   * attempt stops real work: it goes through the confirmation dialog, never
+   * through a blind retry that would make a transient failure stop a turn.
    * @param sessionId - the Session to archive.
    */
-  const archiveWithFallback = (sessionId: SessionId): Promise<void> =>
-    services.archiveSession(sessionId).catch(() =>
-      services.archiveSession(sessionId, { stopActivity: true }))
-
   const archiveOne = (sessionId: SessionId): void => {
-    void archiveWithFallback(sessionId)
-      .catch(error => console.warn('workspace-organize: archive refused', sessionId, error))
+    void services.archiveSession(sessionId).catch((error) => {
+      const activity = activeSessionRefusal(error)
+      if (activity === undefined) {
+        console.warn('workspace-organize: archive refused', sessionId, error)
+        return
+      }
+      const row = list.byId[sessionId]
+      setDialog({
+        kind: 'archiveSession',
+        sessionId,
+        title: row?.title ?? row?.displayTitle ?? '',
+        activity,
+      })
+    })
   }
 
   /**
@@ -497,8 +612,19 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     // content that does not exist yet.
     const isBlank = row.blank
     const isArchived = archived.has(sessionId)
-    const status = rowStatus(statuses, sessionId, messages)
+    // The shipped row title: the durable title, or the localized Untitled label
+    // — never the directory-derived `displayTitle` fallback.
+    const title = isBlank ? messages.blankSession : row.title || messages.untitled
+    const status = rowStatus(
+      statuses,
+      sessionId,
+      messages,
+      row.running,
+      runningSubagentCount(list, sessionId, statuses),
+    )
     const key = `s:${sessionId}`
+    const open = (): void => { if (!isArchived) services.openSession(sessionId) }
+    const rename = (): void => setDialog({ kind: 'renameSession', sessionId, current: row.title ?? '' })
     const spec = (): MenuSpec => ({
       items: [
         isArchived
@@ -509,7 +635,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       actions: {
         archive: () => archiveOne(sessionId),
         unarchive: () => restoreOne(sessionId),
-        rename: () => setDialog({ kind: 'renameSession', sessionId, current: row.displayTitle }),
+        rename,
       },
     })
     return (
@@ -526,10 +652,14 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         aria-description={isArchived ? messages.archivedNotOpenable : undefined}
         style={indent(depth)}
         data-session-id={sessionId}
-        onClick={() => { if (!isArchived) services.openSession(sessionId) }}
-        onDoubleClick={isBlank
-          ? undefined
-          : () => setDialog({ kind: 'renameSession', sessionId, current: row.displayTitle })}
+        tabIndex={0}
+        onClick={open}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return
+          event.preventDefault()
+          open()
+        }}
+        onDoubleClick={isBlank ? undefined : rename}
         // A placeholder has no menu to offer, but its right-click is still
         // claimed so the platform menu never appears over the tree.
         {...(isBlank ? { onContextMenu: (event: React.MouseEvent) => event.preventDefault() } : menuProps(key, spec))}
@@ -537,7 +667,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         <span className="dwo-slot">
           {!isArchived && !isBlank && status.state !== 'idle' ? <StateDot state={status.state} /> : null}
         </span>
-        <span className="dwo-row-title">{isBlank ? messages.blankSession : row.displayTitle}</span>
+        <span className="dwo-row-title">{title}</span>
         {!isBlank && (
           <span className="dwo-time">{status.trailing ?? timeLabel(row.updatedAt, now, messages)}</span>
         )}
@@ -547,6 +677,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
               <button
                 type="button"
                 className="dwo-act-btn"
+                aria-label={isArchived ? messages.unarchive : messages.archiveSession}
                 onClick={(event) => {
                   event.stopPropagation()
                   if (isArchived) restoreOne(sessionId)
@@ -565,6 +696,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const workspaceRow = (workspace: (typeof workspaces)[number], depth: number) => {
     const ids = visibleOf(workspace.workspaceId)
     const key = `ws:${workspace.workspaceId}`
+    const label = workspaceLabel(workspace)
     // Workspaces start collapsed — only the one holding the current session
     // opens, which is the shipped browser's own resting shape.
     const isOpen = isExpanded(key, workspace.workspaceId === activeWorkspaceId)
@@ -591,13 +723,13 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       }
       items.push({ id: 'delete', label: messages.deleteWorkspace, icon: <IconTrashOutlineRegular />, danger: true })
       const actions: Record<string, () => void> = {
-        rename: () => setDialog({ kind: 'renameWorkspace', workspaceId: workspace.workspaceId, current: workspace.title }),
+        rename: () => setDialog({ kind: 'renameWorkspace', workspaceId: workspace.workspaceId, current: label }),
         newSession: () => services.startSession(workspace.workspaceId),
         remove: () => persist(currentGroups.map(group => ({
           ...group,
           workspaceIds: group.workspaceIds.filter(id => id !== workspace.workspaceId),
         }))),
-        delete: () => setDialog({ kind: 'deleteWorkspace', workspaceId: workspace.workspaceId, title: workspace.title }),
+        delete: () => setDialog({ kind: 'deleteWorkspace', workspaceId: workspace.workspaceId, title: label }),
       }
       // One entry per candidate group, addressed by the submenu row id.
       for (const target of others) {
@@ -614,7 +746,13 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           aria-level={2}
           aria-expanded={isOpen}
           style={indent(depth)}
+          tabIndex={0}
           onClick={() => setExpanded(key, !isOpen)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return
+            event.preventDefault()
+            setExpanded(key, !isOpen)
+          }}
           {...menuProps(key, spec)}
         >
           <span className={`dwo-slot dwo-folder${activeWorkspaceId === workspace.workspaceId ? ' active' : ''}`}>
@@ -624,13 +762,14 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
             <span className={`dwo-arrow${isOpen ? ' open' : ''}`}><IconTriangleRightFillRegular size={14} /></span>
           </span>
           <span className="dwo-text">
-            <span className="dwo-row-title">{workspace.title}</span>
+            <span className="dwo-row-title">{label}</span>
           </span>
           <span className="dwo-actions">
             <Tooltip label={messages.workspaceMenu} side="bottom" align="end" delayMs={500} portal>
               <button
                 type="button"
                 className="dwo-act-btn"
+                aria-label={messages.workspaceMenu}
                 onClick={(event) => {
                   event.stopPropagation()
                   openMenuUnder(key, spec(), event.currentTarget)
@@ -643,6 +782,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
               <button
                 type="button"
                 className="dwo-act-btn"
+                aria-label={messages.newSession}
                 onClick={(event) => {
                   event.stopPropagation()
                   services.startSession(workspace.workspaceId)
@@ -673,19 +813,26 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     // Groups hold no sessions of their own, so they rest open: the noise a wall
     // of identical session rows caused came from workspaces, not here.
     const isOpen = isExpanded(key, true)
-    const members = group.workspaceIds
+    const allMembers = group.workspaceIds
       .map(id => workspaceById.get(id))
       .filter(member => member !== undefined)
+    // The archived-only view drops Workspaces with no archived row, as the
+    // shipped browser does. Membership and the group operations still read the
+    // unfiltered list: the filter changes what is shown, never what a group
+    // holds.
+    const members = archivedFilter === 'only'
+      ? allMembers.filter(member => visibleOf(member.workspaceId).length > 0)
+      : allMembers
     // The count and the confirmation use the same derivation as the operation
     // itself, so the number promised is the number archived.
-    const content = members.flatMap(member => contentOf(member.workspaceId))
-    const sessionCount = content.length
-    const { running, pending } = groupRollUp(members, statuses, archived)
+    const content = allMembers.flatMap(member => contentOf(member.workspaceId))
+    const stopIds = content.filter(isRunning)
+    const { running, pending } = groupRollUp(allMembers, list, statuses, archived)
     const state = pending > 0 ? 'warning' : running > 0 ? 'ongoing' : undefined
-    const summary = [`${members.length} ${messages.unitWorkspaces}`]
+    const summary = [`${allMembers.length} ${messages.unitWorkspaces}`]
     if (running > 0) summary.push(`${running} ${messages.unitRunning}`)
     const rollUpTitle = [
-      `${members.length} ${messages.unitWorkspaces}`,
+      `${allMembers.length} ${messages.unitWorkspaces}`,
       ...(running > 0 ? [`${running} ${messages.unitRunning}`] : []),
       ...(pending > 0 ? [`${pending} ${messages.unitPending}`] : []),
     ].join(' · ')
@@ -708,14 +855,16 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           kind: 'archiveGroup',
           groupId: group.id,
           name: group.name,
-          count: sessionCount,
+          targets: content,
+          running: stopIds.length,
+          stopIds,
         }),
         newGroup: () => setDialog({ kind: 'createGroup' }),
         deleteWorkspaces: () => setDialog({
           kind: 'deleteGroupWorkspaces',
           groupId: group.id,
           name: group.name,
-          count: members.length,
+          workspaceIds: allMembers.map(member => member.workspaceId),
         }),
         ungroup: () => persist(currentGroups.filter(current => current.id !== group.id)),
       },
@@ -729,7 +878,13 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           aria-level={1}
           aria-expanded={isOpen}
           style={indent(depth)}
+          tabIndex={0}
           onClick={() => setExpanded(key, !isOpen)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return
+            event.preventDefault()
+            setExpanded(key, !isOpen)
+          }}
           {...menuProps(key, spec)}
         >
           <span className="dwo-slot dwo-chev">
@@ -747,6 +902,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
               <button
                 type="button"
                 className="dwo-act-btn"
+                aria-label={messages.groupMenu}
                 onClick={(event) => {
                   event.stopPropagation()
                   openMenuUnder(key, spec(), event.currentTarget)
@@ -791,7 +947,13 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           aria-level={1}
           aria-expanded={isOpen}
           style={indent(0)}
+          tabIndex={0}
           onClick={() => setExpanded(UNOWNED_KEY, !isOpen)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return
+            event.preventDefault()
+            setExpanded(UNOWNED_KEY, !isOpen)
+          }}
           // The bucket offers no menu, but its right-click is still claimed so
           // the platform menu never appears over the tree — the same contract
           // every other row of this browser follows.
@@ -814,17 +976,34 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     )
   }
 
-  const confirmArchiveGroup = async (groupId: string): Promise<void> => {
-    const group = groups?.find(candidate => candidate.id === groupId)
-    if (group === undefined) return
+  /**
+   * Archive the sessions a group confirmation counted.
+   *
+   * The target list is frozen when the dialog opens, so a session that appears
+   * or disappears while the dialog is up cannot change what the operator
+   * confirmed. A session that refuses because it started running in the
+   * meantime is skipped, not stopped: only the sessions counted as running at
+   * open time were offered for stop-and-archive.
+   * @param targets - the sessions the confirmation counted.
+   * @param stopIds - the targets whose running work the operator agreed to stop.
+   */
+  const confirmArchiveGroup = async (
+    targets: readonly SessionId[],
+    stopIds: readonly SessionId[],
+  ): Promise<void> => {
+    const allowedToStop = new Set(stopIds)
     setBusy(true)
     try {
-      for (const workspaceId of group.workspaceIds) {
-        for (const sessionId of contentOf(workspaceId)) {
-          // `contentOf` already drops archived rows and the blank placeholder:
-          // exactly the members the count promised.
-          await archiveWithFallback(sessionId)
-            .catch(error => console.warn('workspace-organize: archive refused', sessionId, error))
+      for (const sessionId of targets) {
+        try {
+          await services.archiveSession(sessionId)
+        } catch (error) {
+          if (activeSessionRefusal(error) === undefined || !allowedToStop.has(sessionId)) {
+            console.warn('workspace-organize: archive refused', sessionId, error)
+            continue
+          }
+          await services.archiveSession(sessionId, { stopActivity: true })
+            .catch(retry => console.warn('workspace-organize: archive refused', sessionId, retry))
         }
       }
     } finally {
@@ -833,12 +1012,18 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     }
   }
 
-  const confirmDeleteGroupWorkspaces = async (groupId: string): Promise<void> => {
-    const group = currentGroups.find(candidate => candidate.id === groupId)
-    if (group === undefined) return
+  /**
+   * Delete exactly the Workspaces the confirmation counted.
+   * @param groupId - group removed from the document once the deletes settle.
+   * @param workspaceIds - Workspace ids frozen at open time.
+   */
+  const confirmDeleteGroupWorkspaces = async (
+    groupId: string,
+    workspaceIds: readonly string[],
+  ): Promise<void> => {
     setBusy(true)
     try {
-      for (const workspaceId of group.workspaceIds) {
+      for (const workspaceId of workspaceIds) {
         await services.deleteWorkspace(asWorkspaceId(workspaceId))
           .catch(error => console.warn('workspace-organize: delete failed', workspaceId, error))
       }
@@ -852,7 +1037,11 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const addWorkspace = (): void => {
     void services.pickDirectory().then((path) => {
       if (path === null || path === '') return undefined
-      return services.createWorkspace({ path })
+      // The shipped flow adopts the directory and opens its Session; leaving
+      // the operator on an empty new Workspace row is not the same action.
+      return services.createWorkspace({ path }).then((workspace) => {
+        services.startSession(workspace.workspaceId)
+      })
     }).catch(error => console.warn('workspace-organize: add workspace failed', error))
   }
 
@@ -869,7 +1058,8 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
 
   const viewMenu: MenuSpec = {
     items: [
-      { id: 'newGroup', label: messages.newGroup, icon: <IconProjectAddOutlineRegular /> },
+      // Nothing may be persisted before the stored document arrives.
+      { id: 'newGroup', label: messages.newGroup, icon: <IconProjectAddOutlineRegular />, disabled: groups === undefined },
       { id: 'expandAll', label: messages.expandAll, icon: <IconChevronsUpDownOutlineRegular /> },
       { id: 'collapseAll', label: messages.collapseAll, icon: <IconChevronsUpDownOutlineRegular /> },
       { type: 'separator', id: 'archived-separator' },
@@ -892,8 +1082,61 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
 
   const pendingLoad = groups === undefined || !workspaceReady
 
+  // The archived-only view lists the archive, not the whole tree: a Workspace
+  // with no archived row is dropped, exactly as the shipped browser drops it.
+  const onlyArchived = archivedFilter === 'only'
+  const listedGroups = onlyArchived
+    ? currentGroups.filter(group => group.workspaceIds.some(id => visibleOf(id).length > 0))
+    : currentGroups
+  const listedUngrouped = onlyArchived
+    ? ungrouped.filter(workspace => visibleOf(workspace.workspaceId).length > 0)
+    : ungrouped
+
+  /**
+   * The rail is the sidebar's folded state: two icon controls that ask the shell
+   * to expand, and no tree. Rendering the browser here would put the whole tree
+   * in a 56px column.
+   */
+  if (!wide) {
+    return (
+      <div className="dwo-browse rail">
+        <style>{STYLES}</style>
+        <div className="dwo-header">
+          <Tooltip label={messages.addWorkspace} side="bottom" align="end" delayMs={500} portal>
+            <button
+              type="button"
+              className="dwo-icon-btn"
+              aria-label={messages.addWorkspace}
+              onClick={() => {
+                expandSidebar()
+                addWorkspace()
+              }}
+            >
+              <IconProjectAddOutlineRegular size={18} />
+            </button>
+          </Tooltip>
+        </div>
+        <div className="dwo-rail-search">
+          <Tooltip label={messages.search} side="bottom" align="end" delayMs={500} portal>
+            <button
+              type="button"
+              className="dwo-icon-btn dwo-search-btn"
+              aria-label={messages.search}
+              onClick={() => {
+                expandSidebar()
+                setSearchOpen(true)
+              }}
+            >
+              <IconSearchOutlineRegular size={18} />
+            </button>
+          </Tooltip>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className={`dwo-browse${wide ? '' : ' rail'}`}>
+    <div className="dwo-browse">
       <style>{STYLES}</style>
       <div className="dwo-header">
         <span className={`dwo-head-label${searchOpen ? ' hidden' : ''}`}>{messages.organizeTitle}</span>
@@ -909,6 +1152,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
               <button
                 type="button"
                 className="dwo-icon-btn dwo-search-btn"
+                aria-label={searchOpen ? messages.closeSearch : messages.search}
                 onClick={() => {
                   setSearchOpen(value => !value)
                   if (searchOpen) setQuery('')
@@ -939,6 +1183,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
             <button
               type="button"
               className="dwo-icon-btn"
+              aria-label={messages.viewOptions}
               onClick={(event) => {
                 event.stopPropagation()
                 openMenuUnder('view', viewMenu, event.currentTarget)
@@ -948,11 +1193,28 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
             </button>
           </Tooltip>
           <Tooltip label={messages.addWorkspace} side="bottom" align="end" delayMs={500} portal>
-            <button type="button" className="dwo-icon-btn" onClick={addWorkspace}>
+            <button
+              type="button"
+              className="dwo-icon-btn"
+              aria-label={messages.addWorkspace}
+              onClick={addWorkspace}
+            >
               <IconProjectAddOutlineRegular size={16} />
             </button>
           </Tooltip>
-          {!hostSaved && <span className="dwo-saving" title={messages.savePending}>…</span>}
+          {!hostSaved && !saveFailed && <span className="dwo-saving" title={messages.savePending}>…</span>}
+          {saveFailed && (
+            <Tooltip label={messages.saveFailed} side="bottom" align="end" delayMs={500} portal>
+              <button
+                type="button"
+                className="dwo-icon-btn dwo-save-failed"
+                aria-label={messages.retrySave}
+                onClick={retrySave}
+              >
+                !
+              </button>
+            </Tooltip>
+          )}
         </div>
       </div>
       {pendingLoad
@@ -985,13 +1247,13 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
             )
           : (
               <div className="dwo-list" role="tree" aria-label={messages.organizeTitle}>
-                {currentGroups.map(group => groupNode(group, 0))}
-                {currentGroups.length > 0 && ungrouped.length > 0 && (
+                {listedGroups.map(group => groupNode(group, 0))}
+                {listedGroups.length > 0 && listedUngrouped.length > 0 && (
                   <div className="dwo-sep">{messages.ungroupedWorkspaces}</div>
                 )}
-                {ungrouped.map(workspace => workspaceRow(workspace, 0))}
+                {listedUngrouped.map(workspace => workspaceRow(workspace, 0))}
                 {unownedNode(unowned)}
-                {currentGroups.length === 0 && ungrouped.length === 0 && unowned.length === 0 && (
+                {listedGroups.length === 0 && listedUngrouped.length === 0 && unowned.length === 0 && (
                   <div className="dwo-empty">{messages.noWorkspaces}</div>
                 )}
               </div>
@@ -1018,8 +1280,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           key={dialogKey(dialog)}
           dialog={dialog}
           busy={busy}
+          messages={messages}
           close={() => { if (!busy) setDialog(undefined) }}
-          submit={(name) => { void submitDialog(dialog, name) }}
+          submit={name => submitDialog(dialog, name)}
         />
       )}
     </div>
@@ -1034,6 +1297,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       case 'archiveGroup': return `archive-group:${current.groupId}`
       case 'deleteGroupWorkspaces': return `delete-workspaces:${current.groupId}`
       case 'deleteWorkspace': return `delete-workspace:${current.workspaceId}`
+      case 'archiveSession': return `archive-session:${current.sessionId}`
       default: return 'create-group'
     }
   }
@@ -1053,7 +1317,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       }
       case 'renameWorkspace': {
         const trimmed = name.trim()
-        if (trimmed !== '' && trimmed !== current.current) {
+        // An unchanged title is confirmed on purpose: the shipped dialog lets it
+        // pin an automatic title, so skipping it would keep that out of reach.
+        if (trimmed !== '') {
           await services.renameWorkspace(current.workspaceId, trimmed)
             .catch(error => console.warn('workspace-organize: rename failed', error))
         }
@@ -1062,7 +1328,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
       }
       case 'renameSession': {
         const trimmed = name.trim()
-        if (trimmed !== '' && trimmed !== current.current) {
+        if (trimmed !== '') {
           await services.renameSession(current.sessionId, trimmed)
             .catch(error => console.warn('workspace-organize: session rename failed', error))
         }
@@ -1070,10 +1336,14 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         return
       }
       case 'archiveGroup':
-        await confirmArchiveGroup(current.groupId)
+        await confirmArchiveGroup(current.targets, current.stopIds)
         return
       case 'deleteGroupWorkspaces':
-        await confirmDeleteGroupWorkspaces(current.groupId)
+        await confirmDeleteGroupWorkspaces(current.groupId, current.workspaceIds)
+        return
+      case 'archiveSession':
+        await services.archiveSession(current.sessionId, { stopActivity: true })
+        setDialog(undefined)
         return
       case 'deleteWorkspace': {
         await services.deleteWorkspace(current.workspaceId)
@@ -1086,40 +1356,63 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
 }
 
 /** One field-bearing or confirming dialog, on the shipped modal. */
-function DialogHost({ dialog, busy, close, submit }: {
+function DialogHost({ dialog, busy, messages, close, submit }: {
   dialog: Dialog
   busy: boolean
+  messages: Messages
   close: () => void
-  submit: (name: string) => void
+  submit: (name: string) => Promise<void>
 }) {
   const [name, setName] = useState(() => currentName(dialog))
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
   const needsName = dialogNeedsName(dialog)
+  const disabled = busy || pending
+  const confirmLabel = dialogConfirmLabel(dialog, messages)
+  const confirm = (): void => {
+    if (disabled) return
+    setPending(true)
+    setError(undefined)
+    // The dialog stays open with the failure on screen: a refused stop or a
+    // rejected rename must not look like it worked.
+    void submit(name)
+      .catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
+      .finally(() => setPending(false))
+  }
   return (
     <Modal
       open
-      onClose={close}
-      title={dialogTitle(dialog)}
+      onClose={() => { if (!disabled) close() }}
+      title={dialogTitle(dialog, messages)}
       closeLabel={messages.close}
-      description={dialogBody(dialog)}
+      description={dialogBody(dialog, messages)}
       footer={(
         <>
-          <Button variant="outline" size="md" onClick={close} disabled={busy}>{messages.cancel}</Button>
-          <Button variant="primary" size="md" onClick={() => submit(name)} disabled={busy}>
-            {busy ? messages.working : messages.ok}
+          <Button variant="outline" size="md" onClick={close} disabled={disabled}>{messages.cancel}</Button>
+          <Button variant="primary" size="md" onClick={confirm} disabled={disabled}>
+            {disabled ? messages.working : confirmLabel}
           </Button>
         </>
       )}
     >
+      {dialog.kind === 'archiveSession' && dialog.activity.length > 0 && (
+        <ul className="dwo-activity" aria-label={messages.activityLabel}>
+          {dialog.activity.map((activity, index) => (
+            <li key={`${activity.kind}-${String(index)}`}>{activityLine(activity, messages)}</li>
+          ))}
+        </ul>
+      )}
       {needsName && (
         <Input
           value={name}
-          placeholder={dialogFieldLabel(dialog)}
-          aria-label={dialogFieldLabel(dialog)}
+          placeholder={dialogFieldLabel(dialog, messages)}
+          aria-label={dialogFieldLabel(dialog, messages)}
           maxLength={dialogNameLimit(dialog)}
           data-modal-autofocus
           onChange={event => setName(event.target.value)}
         />
       )}
+      {error !== undefined && <div className="dwo-dialog-error" role="alert">{error}</div>}
     </Modal>
   )
 }
@@ -1163,7 +1456,7 @@ function currentName(dialog: Dialog): string {
 }
 
 /** One dialog's heading. */
-function dialogTitle(dialog: Dialog): string {
+function dialogTitle(dialog: Dialog, messages: Messages): string {
   switch (dialog.kind) {
     case 'createGroup': return messages.newGroup
     case 'renameGroup': return messages.renameGroup
@@ -1172,21 +1465,31 @@ function dialogTitle(dialog: Dialog): string {
     case 'archiveGroup': return messages.archiveGroup
     case 'deleteGroupWorkspaces': return messages.deleteGroupWorkspaces
     case 'deleteWorkspace': return messages.deleteWorkspace
+    case 'archiveSession': return messages.archiveConfirmTitle
   }
 }
 
 /** One dialog's supporting sentence. */
-function dialogBody(dialog: Dialog): string | undefined {
+function dialogBody(dialog: Dialog, messages: Messages): string | undefined {
   switch (dialog.kind) {
-    case 'archiveGroup': return messages.archiveGroupBody(dialog.count)
-    case 'deleteGroupWorkspaces': return messages.deleteGroupWorkspacesBody(dialog.count)
+    case 'archiveGroup': {
+      const body = messages.archiveGroupBody(dialog.targets.length)
+      return dialog.running > 0 ? `${body} ${messages.archiveGroupRunning(dialog.running)}` : body
+    }
+    case 'deleteGroupWorkspaces': return messages.deleteGroupWorkspacesBody(dialog.workspaceIds.length)
     case 'deleteWorkspace': return messages.deleteWorkspaceBody
+    case 'archiveSession': return messages.archiveConfirmBody(dialog.title)
     default: return undefined
   }
 }
 
+/** One dialog's primary-button label. */
+function dialogConfirmLabel(dialog: Dialog, messages: Messages): string {
+  return dialog.kind === 'archiveSession' ? messages.archiveConfirmAction : messages.ok
+}
+
 /** One dialog's field label, doubling as its placeholder. */
-function dialogFieldLabel(dialog: Dialog): string {
+function dialogFieldLabel(dialog: Dialog, messages: Messages): string {
   switch (dialog.kind) {
     case 'renameWorkspace': return messages.nameWorkspace
     case 'renameSession': return messages.nameSession

@@ -10,7 +10,7 @@ import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-sess
 import type { WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SessionStatus, SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
-import { messages } from '../src/client/i18n.ts'
+import { messages } from './i18n.ts'
 import {
   contentSessionIds,
   groupRollUp,
@@ -45,6 +45,7 @@ function list(rows: readonly SessionSummary[]): SessionListState {
   return {
     ids: rows.map(entry => entry.id),
     byId: Object.fromEntries(rows.map(entry => [entry.id, entry])),
+    projectionsBySession: {},
   } as unknown as SessionListState
 }
 
@@ -169,6 +170,32 @@ describe('visibleSessionIds', () => {
   })
 })
 
+describe('visibleSessionIds render order', () => {
+  it('keeps an opened non-blank session in its place', () => {
+    // Only a blank placeholder leads. The main view also retains an opened
+    // conversation, and hoisting that one would reshuffle the tree on click.
+    const a = row('a')
+    const b = row('b', { retainedBy: { mainView: 1 } as SessionSummary['retainedBy'] })
+    const sessions = list([a, b, row('c')])
+    const ids = visibleSessionIds({
+      list: sessions,
+      workspace: workspace('w', ['a', 'b', 'c']),
+      main: mainSessionId(sessions),
+      archived: new Set(),
+      query: '',
+    })
+    expect(ids).toEqual(['a', 'b', 'c'])
+  })
+
+  it('keeps a non-blank unowned session in recency order', () => {
+    const a = row('a', { updatedAt: 30 })
+    const b = row('b', { updatedAt: 20, retainedBy: { mainView: 1 } as SessionSummary['retainedBy'] })
+    const c = row('c', { updatedAt: 10 })
+    expect(unownedSessionIds(list([a, b, c]), [], mainSessionId(list([a, b, c])), new Set(), ''))
+      .toEqual(['a', 'b', 'c'])
+  })
+})
+
 describe('archived-row visibility', () => {
   const current = row('blank-current', { blank: true, retainedBy: { mainView: 1 } as SessionSummary['retainedBy'] })
   const named = row('named')
@@ -283,11 +310,28 @@ describe('groupRollUp', () => {
   })
 
   it('counts running and waiting members and ignores archived rows', () => {
-    expect(groupRollUp(members, snapshot, new Set([id('archived-run')]))).toEqual({ running: 1, pending: 1 })
+    expect(groupRollUp(members, list([]), snapshot, new Set([id('archived-run')])))
+      .toEqual({ running: 1, pending: 1 })
   })
 
   it('counts a session with an unknown status as neither', () => {
-    expect(groupRollUp([workspace('c', ['unknown'])], snapshot, new Set())).toEqual({ running: 0, pending: 0 })
+    expect(groupRollUp([workspace('c', ['unknown'])], list([]), snapshot, new Set()))
+      .toEqual({ running: 0, pending: 0 })
+  })
+
+  it('falls back to the summary running flag and counts running subagents', () => {
+    const parent = row('parent')
+    const child = row('child', { parentId: id('parent') })
+    const summaryRunning = row('summary-running', { running: true })
+    const withChild = list([parent, child, summaryRunning])
+    ;(withChild.projectionsBySession as Record<string, unknown>).parent = {
+      values: { subagentCatalog: [{ id: id('child') }] },
+    }
+    const childStatus = statuses({ child: { running: true } })
+    expect(groupRollUp([workspace('d', ['summary-running'])], withChild, new Map(), new Set()))
+      .toEqual({ running: 1, pending: 0 })
+    expect(groupRollUp([workspace('e', ['parent'])], withChild, childStatus, new Set()))
+      .toEqual({ running: 1, pending: 0 })
   })
 })
 

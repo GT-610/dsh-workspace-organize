@@ -91,17 +91,22 @@ export function sessionShown(
 /**
  * Put surviving rows in the browser's render order.
  *
- * One rule serves every listing: the retained placeholder leads, archived rows
- * trail the live ones — where the shipped manual order keeps them — and each
- * partition keeps the caller's order. Because it holds for search results too,
- * a match from the archive never outranks a live one.
+ * One rule serves every listing: the retained **blank placeholder** leads,
+ * archived rows trail the live ones — where the shipped manual order keeps them
+ * — and each partition keeps the caller's order. Because it holds for search
+ * results too, a match from the archive never outranks a live one.
+ *
+ * Only a blank placeholder is hoisted: the main view also retains an opened
+ * ordinary Session, and the shipped `sectionMembers` leaves it in place.
  * @param ids - ids that survived the visibility rule, in caller order.
+ * @param list - sessions list snapshot, for the placeholder flag.
  * @param main - the retained session id.
  * @param archived - registry-global archive set.
  * @returns the same ids, placeholder first, archived last.
  */
 function partitionRows(
   ids: readonly SessionId[],
+  list: SessionListState,
   main: SessionId | undefined,
   archived: ReadonlySet<SessionId>,
 ): SessionId[] {
@@ -109,7 +114,7 @@ function partitionRows(
   const live: SessionId[] = []
   const spent: SessionId[] = []
   for (const id of ids) {
-    if (id === main) leading.push(id)
+    if (id === main && list.byId[id]?.blank === true) leading.push(id)
     else if (archived.has(id)) spent.push(id)
     else live.push(id)
   }
@@ -157,7 +162,7 @@ export function visibleSessionIds(selection: SessionSelection): SessionId[] {
         if (row === undefined || row.blank) return false
         return row.displayTitle.toLowerCase().includes(query)
       })
-  return partitionRows(matched, main, archived)
+  return partitionRows(matched, list, main, archived)
 }
 
 /**
@@ -211,7 +216,7 @@ export function unownedSessionIds(
       if (at !== other) return other - at
       return left < right ? -1 : left > right ? 1 : 0
     })
-  return partitionRows(shown, main, archived)
+  return partitionRows(shown, list, main, archived)
 }
 
 /**
@@ -239,30 +244,62 @@ const PENDING_COPY: Readonly<Record<string, 'statusApproval' | 'statusPlanReview
 }
 
 /**
+ * Running subagents of one Session.
+ *
+ * The catalog's `subagentCatalog` is the Host projection a parent row already
+ * carries; a child's own status may not have arrived yet, so the Session
+ * summary's running flag is the fallback — the same pair the shipped
+ * `runningChildCount` reads.
+ * @param list - sessions list snapshot.
+ * @param parentId - the Session whose children are counted.
+ * @param statuses - unified UI status snapshot.
+ * @returns how many children are running.
+ */
+export function runningSubagentCount(
+  list: SessionListState,
+  parentId: SessionId,
+  statuses: SessionStatusSnapshot,
+): number {
+  const catalog = list.projectionsBySession[parentId]?.values.subagentCatalog
+  if (catalog === undefined) return 0
+  let running = 0
+  for (const child of catalog) {
+    const state = statuses.get(child.id)?.running ?? list.byId[child.id]?.running
+    if (state === true) running += 1
+  }
+  return running
+}
+
+/**
  * One row's status.
  *
- * A pending interaction outranks running, which outranks a finished-but-unread
- * completion — the same precedence the shipped status dots use. A pending kind
- * this plugin has no copy for keeps the warning dot and leaves the timestamp in
- * place rather than printing a raw kind.
+ * A pending interaction outranks running, which outranks running subagents,
+ * which outrank a finished-but-unread completion — the same precedence the
+ * shipped status dots use. A pending kind this plugin has no copy for keeps the
+ * warning dot and leaves the timestamp in place rather than printing a raw kind.
  * @param statuses - unified UI status snapshot.
  * @param id - the session to read.
  * @param messages - copy for the pending label.
+ * @param runningFallback - the Session summary's running flag, used while the
+ * unified status has no entry for the row.
+ * @param runningSubagents - how many of the Session's children are running.
  * @returns the dot state and optional trailing label.
  */
 export function rowStatus(
   statuses: SessionStatusSnapshot,
   id: SessionId,
   messages: Messages,
+  runningFallback = false,
+  runningSubagents = 0,
 ): RowStatus {
   const status = statuses.get(id)
-  if (status === undefined) return { state: 'idle' }
-  if (status.pendingInteraction !== undefined) {
+  if (status?.pendingInteraction !== undefined) {
     const key = PENDING_COPY[status.pendingInteraction.kind]
     return key === undefined ? { state: 'warning' } : { state: 'warning', trailing: messages[key] }
   }
-  if (status.running === true) return { state: 'ongoing' }
-  if (status.completionUnread) return { state: 'done' }
+  if ((status?.running ?? runningFallback) === true) return { state: 'ongoing' }
+  if (runningSubagents > 0) return { state: 'ongoing' }
+  if (status?.completionUnread === true) return { state: 'done' }
   return { state: 'idle' }
 }
 
@@ -278,14 +315,18 @@ export interface GroupRollUp {
  * Roll member Workspaces up into one group status.
  *
  * A group holds no sessions of its own, so its dot and count come from the
- * members. Archived rows are already out of the way and never counted.
+ * members. Archived rows are already out of the way and never counted. A row
+ * counts as running through the unified status first, the summary's running
+ * flag next, and its running subagents last — the same fallbacks a row uses.
  * @param members - the group's live member Workspaces.
+ * @param list - sessions list snapshot, for summary fallbacks.
  * @param statuses - unified UI status snapshot.
  * @param archived - registry-global archive set.
  * @returns running and pending session counts.
  */
 export function groupRollUp(
   members: readonly WorkspaceView[],
+  list: SessionListState,
   statuses: SessionStatusSnapshot,
   archived: ReadonlySet<SessionId>,
 ): GroupRollUp {
@@ -295,9 +336,15 @@ export function groupRollUp(
     for (const id of member.sessionIds) {
       if (archived.has(id)) continue
       const status = statuses.get(id)
-      if (status === undefined) continue
-      if (status.pendingInteraction !== undefined) pending += 1
-      else if (status.running === true) running += 1
+      if (status?.pendingInteraction !== undefined) {
+        pending += 1
+        continue
+      }
+      if ((status?.running ?? list.byId[id]?.running) === true) {
+        running += 1
+        continue
+      }
+      if (runningSubagentCount(list, id, statuses) > 0) running += 1
     }
   }
   return { running, pending }

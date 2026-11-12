@@ -8,9 +8,10 @@
  * shadowing registration, which is why every operation crosses through a
  * lazily-resolved Cordis service instead of arriving as a prop.
  */
-import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { LOCALE_NS } from './i18n.ts'
 
 /**
  * Recover a branded Workspace id from the plain string the group document
@@ -45,7 +46,7 @@ export interface Services {
   /** Delete a Workspace registration; directory and logs stay. */
   deleteWorkspace: (workspaceId: WorkspaceId) => Promise<void>
   /** Adopt a picked host directory as a Workspace. */
-  createWorkspace: (input: { path: string }) => Promise<unknown>
+  createWorkspace: (input: { path: string }) => Promise<WorkspaceView>
   /** Ask the environment for a directory, or `null` when it has no picker. */
   pickDirectory: () => Promise<string | null>
 }
@@ -55,5 +56,5 @@ export interface OrganizeBrowserInjected {
   services: Services
 }
 
-/** Props of the registered browser: runtime shares plus its injected face. */
-export type OrganizeBrowserProps = PropsRuntime<'sidebar.workspaces'> & OrganizeBrowserInjected
+/** Props of the registered browser: runtime shares, the locale seat, plus its injected face. */
+export type OrganizeBrowserProps = PropsRuntime<'sidebar.workspaces'> & OrganizeBrowserInjected & PropsLocale<typeof LOCALE_NS>
