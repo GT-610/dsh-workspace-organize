@@ -407,20 +407,36 @@ async function loadGroupDocument() {
 /**
 * Persist the group document through the Host, mirroring it locally either way.
 * @param doc - the document to store.
-* @returns whether the Host accepted it.
+* @returns whether the Host accepted it, and the refusal detail when it did not.
 */
 async function saveGroupDocument(doc) {
 	try {
 		localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(doc));
 	} catch {}
 	try {
-		return (await fetch(GROUP_ROUTE, {
+		const response = await fetch(GROUP_ROUTE, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(doc)
-		})).ok;
-	} catch {
-		return false;
+		});
+		if (response.ok) return { ok: true };
+		let detail = `HTTP ${String(response.status ?? "?")}`;
+		try {
+			const text = typeof response.text === "function" ? await response.text() : "";
+			if (text !== "") detail += `: ${text.slice(0, 300)}`;
+		} catch {}
+		console.warn("workspace-organize: the Host refused the group document:", detail);
+		return {
+			ok: false,
+			detail
+		};
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		console.warn("workspace-organize: the Host save failed:", detail);
+		return {
+			ok: false,
+			detail
+		};
 	}
 }
 /** Read the mirrored disclosure choices. */
@@ -991,6 +1007,8 @@ function GroupedBrowser(props) {
 	const [busy, setBusy] = (0, react.useState)(false);
 	const [hostSaved, setHostSaved] = (0, react.useState)(true);
 	const [saveFailed, setSaveFailed] = (0, react.useState)(false);
+	/** Why the last write was refused, when the Host said. */
+	const [saveError, setSaveError] = (0, react.useState)(void 0);
 	/**
 	* The client's write chain: each save starts after the previous one settles.
 	*
@@ -1003,7 +1021,7 @@ function GroupedBrowser(props) {
 	*/
 	/** The search field focuses when the header magnifier opens it. */
 	const searchInput = (0, react.useRef)(null);
-	const writeTail = (0, react.useRef)(Promise.resolve(true));
+	const writeTail = (0, react.useRef)(Promise.resolve({ ok: true }));
 	/** Newest document, kept for the retry control after a refused save. */
 	const lastDocument = (0, react.useRef)(void 0);
 	/**
@@ -1040,15 +1058,17 @@ function GroupedBrowser(props) {
 		setGroups(next);
 		setHostSaved(false);
 		setSaveFailed(false);
+		setSaveError(void 0);
 		const run = writeTail.current.then(() => saveGroupDocument({
 			version: 1,
 			groups: next
 		}));
 		writeTail.current = run;
-		run.then((ok) => {
+		run.then((result) => {
 			if (writeTail.current !== run) return;
-			setHostSaved(ok);
-			setSaveFailed(!ok);
+			setHostSaved(result.ok);
+			setSaveFailed(!result.ok);
+			setSaveError(result.ok ? void 0 : result.detail);
 		});
 	}, []);
 	/** Re-send the newest document after the Host refused it. */
@@ -2069,7 +2089,7 @@ function GroupedBrowser(props) {
 								children: "…"
 							}),
 							saveFailed && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Tooltip, {
-								label: messages.saveFailed,
+								label: saveError === void 0 ? messages.saveFailed : `${messages.saveFailed} ${saveError}`,
 								side: "bottom",
 								align: "end",
 								delayMs: 500,

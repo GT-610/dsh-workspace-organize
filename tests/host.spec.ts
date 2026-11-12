@@ -65,8 +65,12 @@ describe('sameOriginWrite', () => {
     expect(sameOriginWrite(request({ origin: 'not a url', host: 'localhost:3080' }))).toBe(false)
   })
 
-  it('refuses a request carrying neither header — not a browser JSON POST', () => {
-    expect(sameOriginWrite(request({ host: 'localhost:3080' }))).toBe(false)
+  it('accepts a request carrying neither header — the desktop proxy strips both', () => {
+    // The desktop shell forwards `/api/*` through its authenticated reverse
+    // proxy, which removes `Origin`, `Sec-Fetch-Site` and the cookie before
+    // forwarding. A browser's cross-site POST always carries one of the two,
+    // so accepting this shape does not admit one.
+    expect(sameOriginWrite(request({ host: 'localhost:3080' }))).toBe(true)
   })
 })
 

@@ -719,7 +719,13 @@ function heldWrites() {
       })
     }
     bodies.push(String(init.body))
-    return new Promise((resolve) => { settles.push(ok => resolve({ ok })) })
+    return new Promise((resolve) => {
+      settles.push(ok => resolve({
+        ok,
+        status: ok ? 200 : 500,
+        text: async () => (ok ? '' : 'invalid group document'),
+      }))
+    })
   }))
   return { bodies, settles }
 }
@@ -772,6 +778,12 @@ describe('GroupedBrowser saves', () => {
     await act(async () => { settles[1]?.(false) })
     await waitFor(() => { expect(document.querySelector('.dwo-save-failed')).not.toBeNull() })
     expect(document.querySelector('.dwo-saving')).toBeNull()
+    // The retry control says why the Host refused the document, not just that
+    // it did: a bare "not saved" cannot be acted on.
+    const label = document.querySelector('.dwo-save-failed')
+      ?.closest('[data-tooltip]')?.getAttribute('data-tooltip') ?? ''
+    expect(label).toContain('HTTP 500')
+    expect(label).toContain('invalid group document')
   })
 })
 

@@ -146,8 +146,15 @@ async function readStoredDocument(file) {
 }
 /**
 * Whether a write request comes from the same origin as the page that serves
-* this route. Browsers always attach `Sec-Fetch-Site` (modern) or `Origin`;
-* a request carrying neither is not a browser form/JSON POST we should accept.
+* this route.
+*
+* Browsers always attach `Sec-Fetch-Site` (modern) or `Origin`; a cross-site
+* browser write therefore carries one and is refused unless it names this Host.
+* A request carrying neither is not a browser form/JSON POST, and the desktop
+* shell uses exactly that shape: its authenticated reverse proxy strips both
+* headers before forwarding `/api/*` to this server. Refusing them made every
+* save from the desktop app a 403 while reads (which have no fence) kept working.
+* The loopback server remains the boundary for local code either way.
 * @param req - incoming request.
 * @returns whether the write may proceed.
 */
@@ -160,7 +167,7 @@ function sameOriginWrite(req) {
 	} catch {
 		return false;
 	}
-	return false;
+	return true;
 }
 /**
 * A body past {@link MAX_DOCUMENT_BYTES}, as distinct from a stream failure.

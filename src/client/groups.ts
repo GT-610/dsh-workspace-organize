@@ -63,11 +63,21 @@ export async function loadGroupDocument(): Promise<GroupDocument> {
 }
 
 /**
+ * The Host's answer to one write.
+ *
+ * A refusal carries the status and response text so the retry control can say
+ * why the document was not stored instead of only that it was not.
+ */
+export type SaveOutcome =
+  | { ok: true }
+  | { ok: false; detail: string }
+
+/**
  * Persist the group document through the Host, mirroring it locally either way.
  * @param doc - the document to store.
- * @returns whether the Host accepted it.
+ * @returns whether the Host accepted it, and the refusal detail when it did not.
  */
-export async function saveGroupDocument(doc: GroupDocument): Promise<boolean> {
+export async function saveGroupDocument(doc: GroupDocument): Promise<SaveOutcome> {
   try {
     localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(doc))
   } catch {
@@ -79,9 +89,20 @@ export async function saveGroupDocument(doc: GroupDocument): Promise<boolean> {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(doc),
     })
-    return response.ok
-  } catch {
-    return false
+    if (response.ok) return { ok: true }
+    let detail = `HTTP ${String(response.status ?? '?')}`
+    try {
+      const text = typeof response.text === 'function' ? await response.text() : ''
+      if (text !== '') detail += `: ${text.slice(0, 300)}`
+    } catch {
+      // A body that cannot be read leaves the status as the detail.
+    }
+    console.warn('workspace-organize: the Host refused the group document:', detail)
+    return { ok: false, detail }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    console.warn('workspace-organize: the Host save failed:', detail)
+    return { ok: false, detail }
   }
 }
 

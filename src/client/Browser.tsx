@@ -51,6 +51,7 @@ import {
   saveExpansion,
   saveGroupDocument,
   type ExpansionState,
+  type SaveOutcome,
 } from './groups.ts'
 import { messagesFrom, type Messages } from './i18n.ts'
 import {
@@ -214,6 +215,8 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const [busy, setBusy] = useState(false)
   const [hostSaved, setHostSaved] = useState(true)
   const [saveFailed, setSaveFailed] = useState(false)
+  /** Why the last write was refused, when the Host said. */
+  const [saveError, setSaveError] = useState<string | undefined>(undefined)
   /**
    * The client's write chain: each save starts after the previous one settles.
    *
@@ -226,7 +229,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
    */
   /** The search field focuses when the header magnifier opens it. */
   const searchInput = useRef<HTMLInputElement | null>(null)
-  const writeTail = useRef<Promise<boolean>>(Promise.resolve(true))
+  const writeTail = useRef<Promise<SaveOutcome>>(Promise.resolve({ ok: true }))
   /** Newest document, kept for the retry control after a refused save. */
   const lastDocument = useRef<WorkspaceGroup[] | undefined>(undefined)
   /**
@@ -271,15 +274,17 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     setGroups(next)
     setHostSaved(false)
     setSaveFailed(false)
+    setSaveError(undefined)
     const run = writeTail.current.then(() => saveGroupDocument({ version: 1, groups: next }))
     writeTail.current = run
     // Only the newest queued save reports: an earlier answer says nothing about
     // the edit still waiting behind it, and clearing the indicator on it would
     // claim a write that has not happened yet.
-    void run.then((ok) => {
+    void run.then((result) => {
       if (writeTail.current !== run) return
-      setHostSaved(ok)
-      setSaveFailed(!ok)
+      setHostSaved(result.ok)
+      setSaveFailed(!result.ok)
+      setSaveError(result.ok ? undefined : result.detail)
     })
   }, [])
 
@@ -1269,7 +1274,13 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           </Tooltip>
           {!hostSaved && !saveFailed && <span className="dwo-saving" title={messages.savePending}>…</span>}
           {saveFailed && (
-            <Tooltip label={messages.saveFailed} side="bottom" align="end" delayMs={500} portal>
+            <Tooltip
+              label={saveError === undefined ? messages.saveFailed : `${messages.saveFailed} ${saveError}`}
+              side="bottom"
+              align="end"
+              delayMs={500}
+              portal
+            >
               <button
                 type="button"
                 className="dwo-icon-btn dwo-save-failed"

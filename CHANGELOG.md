@@ -37,6 +37,16 @@ _Nothing yet._
   do not open, because an archived session cannot be viewed.
 
 ### Fixed
+- Group-document writes from the desktop shell are stored again. The shell
+  forwards `/api/*` through its authenticated reverse proxy, which removes
+  `Origin` and `Sec-Fetch-Site`; the write fence treated that shape as a
+  cross-site request and answered `403`, so every save from the desktop app
+  stayed in the browser mirror. A request carrying neither header is now
+  accepted as a non-browser call — a browser's cross-site write always carries
+  one — and the READMEs state the rule.
+- A refused Host save now says why. The retry control shows the HTTP status and
+  response text, or the network failure, instead of only "not accepted".
+
 
 - The workspace row's New Session button uses the shipped
   `IconNewChatOutlineRegular` glyph; 0.2.2 replaced the project-add glyph the
