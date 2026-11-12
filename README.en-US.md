@@ -12,6 +12,7 @@ Group the DSH sidebar's workspaces into named groups and browse them as group �
 - **A spawned subagent keeps no row of its own.** The session catalog carries subagent children (`origin: 'subagent'`); the shipped sidebar shows them under their parent's header and never as a top-level row. The same rule applies here, in the tree and in the ungrouped bucket alike — so a bulk archive cannot reach a child either.
 - **Archive a session, and get it back.** Archiving moves the row out of the list exactly as the shipped browser does; the view menu carries the same three choices — hide archived, show all (including archived), archived only — and the chosen one is remembered. While archived rows are on screen their trailing button becomes "Restore from archive", and the row itself does not open, because an archived session cannot be viewed.
 - **A session with no workspace keeps its row.** A workspace owns its sessions through its own member list, so deleting a workspace — or starting a session with no workspace at all — leaves sessions that belong to none. The shipped sidebar trails those in an "Ungrouped" bucket; the plugin derives and renders the same bucket, so such a session stays openable instead of vanishing from the tree.
+- **Archiving a running session asks first.** When a session still has a turn, subagent, background job, or scheduled reminder, the Host refuses the archive; the plugin lists that work and stops it only after confirmation. A group confirmation says how many of its sessions were running, and only those are stopped.
 - **Group-level bulk operations.** One group menu entry archives every session in the group, another deletes every workspace in it — both behind a confirmation that names the affected count. The count is the number the operation acts on: archived sessions, the blank placeholder and spawned children are excluded, so it cannot promise three rows and archive ten.
 - **Right-click composes instead of competing.** Menus are claimed on `contextmenu`: if another right-click plugin has already claimed the row, the event is stopped during capture, no second menu appears, and the gesture is never opened on mousedown to step around that arbitration.
 - **Disclosure choices persist.** Explicit expand/collapse choices are stored in localStorage, so a reload renders the same tree.
@@ -111,13 +112,14 @@ src/
    ├─ Browser.tsx          the three-level tree, rows, menus, dialogs
    ├─ select.ts            pure derivations: visible-row rule, roll-up, time buckets
    ├─ groups.ts            group-document transport and localStorage mirror
-   ├─ i18n.ts              Chinese and English copy
+   ├─ i18n.ts              dictionaries, locale registration, Messages mapping
    └─ styles.ts            row layout stylesheet (tokens only)
 tests/
 ├─ select.spec.ts          pure derivations (visibility rule, roll-up, time buckets)
 ├─ contract.spec.ts        document validator and its structural caps
 ├─ host.spec.ts            write fence, body cap, $DSH_HOME resolution
 ├─ browser.spec.tsx        mounts the component in jsdom, checks rows and menus
+├─ i18n.ts                 the test `t` and Messages, resolved from the plugin dictionary
 └─ stubs/primitives.tsx    double for the shipped primitives (why: below)
 ```
 
@@ -137,12 +139,15 @@ Conventions worth reading before a change:
 - **The client artifact must be a closure factory.** The shell loads `exports["./client"]` as a script and expects it to call `window.__ModuleLoader__.load({ id, factory })`. `tsdown.config.ts` closes the CommonJS chunk inside that factory with banner/footer, keeping the baseline modules (`react`, `react/jsx-runtime`, `@deepseek-ai/dsh-client-ui-primitives`, …) external.
 - **Component tests use a double for the shipped primitives.** Their published ESM entry does not declare the runtime it actually imports (`clsx`, `mdast-*`, `micromark-*`, the shiki grammar catalog), so only the copy the shell seeds into its module table can load it. The jsdom tests therefore substitute `tests/stubs/primitives.tsx`, which keeps the contract this plugin depends on; the appearance itself is the shell's business.
 - **The stylesheet is global.** Plugin CSS is injected into the page rather than a shadow root, so every class name is prefixed `dwo-`.
+- **Copy goes through the Client locale service.** `apply` registers the dictionaries with `ctx.locale.register`, the slot registration declares `locale`, and the component reads the framework `t` seat; a language switch refreshes through the renderer without a remount. `tests/i18n.ts` resolves assertions from the same `EN_DICT`, so there is no second copy.
 
 ## Compatibility
 
-- Requires DSH `>= 0.2.1-rc.2` (the `engines.dsh` field, checked at install time).
+- Requires DSH `>= 0.2.2-rc.1` (the `engines.dsh` field, checked at install time).
+- Copy follows the DSH language setting (the Client locale service); switching languages needs no reload.
 - Web half only: the desktop shell renders the same web client, so a tauri and a browser install behave identically.
 - Coexists with right-click menu plugins: this plugin never fights for a row someone else has claimed, and does not stop working when such a plugin is absent.
+- Shadowing limit: the shipped browser's `sidebar.workspaces.session.row.action` / `sidebar.session.row.*` child seats are not rendered by this entry, so third-party Session-row buttons registered into them (and the shipped pin/fork/copy-ID rows) do not appear in the grouped tree. The plugin provides its own archive and rename rows.
 
 ## License
 

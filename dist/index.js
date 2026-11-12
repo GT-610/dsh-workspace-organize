@@ -122,6 +122,29 @@ function resolveDshHome(env = process.env) {
 	return resolve(configured !== void 0 && configured.trim().length > 0 ? expandHomePath(configured) : join(homedir(), ".dsh"));
 }
 /**
+* Read and validate one stored group document.
+*
+* A missing file is a fresh install and reads as an empty document. Any other
+* failure — an unreadable file, malformed JSON, or a shape the validator
+* rejects — is thrown: answering "empty" there would let the Client discard its
+* localStorage mirror and show an installation with no groups.
+* @param file - absolute path of the stored document.
+* @returns the normalized document.
+* @throws when the file exists but cannot be read or validated.
+*/
+async function readStoredDocument(file) {
+	let text;
+	try {
+		text = await readFile(file, "utf8");
+	} catch (error) {
+		if (error.code === "ENOENT") return emptyGroupDocument();
+		throw error;
+	}
+	const doc = normalizeGroupDocument(JSON.parse(text));
+	if (doc === null) throw new Error("stored group document is invalid");
+	return doc;
+}
+/**
 * Whether a write request comes from the same origin as the page that serves
 * this route. Browsers always attach `Sec-Fetch-Site` (modern) or `Origin`;
 * a request carrying neither is not a browser form/JSON POST we should accept.
@@ -203,12 +226,8 @@ function apply(ctx) {
 	let cache;
 	const readDoc = async () => {
 		if (cache !== void 0) return cache;
-		try {
-			cache = normalizeGroupDocument(JSON.parse(await readFile(file, "utf8"))) ?? void 0;
-		} catch {
-			cache = void 0;
-		}
-		return cache ?? emptyGroupDocument();
+		cache = await readStoredDocument(file);
+		return cache;
 	};
 	let tail = Promise.resolve();
 	const enqueueWrite = (doc) => {
@@ -282,6 +301,6 @@ function apply(ctx) {
 	});
 }
 //#endregion
-export { apply, inject, readBody, resolveDshHome, sameOriginWrite };
+export { apply, inject, readBody, readStoredDocument, resolveDshHome, sameOriginWrite };
 
 //# sourceMappingURL=index.js.map

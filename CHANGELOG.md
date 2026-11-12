@@ -6,8 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.2.0] - 2026-11-12
+
 ### Added
 
+- Copy follows the language selected in DSH through the Client locale service
+  instead of the browser language. The dictionaries register with the plugin's
+  own fiber, the slot declares its namespace, and a language switch re-renders
+  the tree without a reload.
+- The folded sidebar renders the shipped rail: two icon controls that ask the
+  shell to expand, instead of the whole tree in a 56px column.
+- Archiving a Session with running work asks first. The Host's
+  `workspace/session-active` refusal is read, the activity families it names are
+  listed, and only the confirmation calls the stop-then-archive path. A group
+  confirmation names how many of its sessions were running when it opened, and
+  only those may be stopped.
+- Session rows carry the shipped status fallbacks: the summary's running flag
+  while the unified status has no entry, and running subagents. Group roll-ups
+  read the same three sources.
+- Rows are keyboard reachable (Tab focus, Enter/Space) and every icon-only
+  control has an accessible name; touch devices keep the row verbs visible.
+- A refused Host save shows a retry control instead of an indicator that never
+  settles.
 - Archived rows are reachable again. The view menu carries the shipped three-way
   choice — hide archived sessions, show all sessions including archived ones, or
   archived only — and the choice survives a reload. While archived rows are on
@@ -16,6 +38,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- An opened ordinary Session no longer jumps to the first row of its Workspace.
+  Only the retained blank placeholder leads; the main view also retains a
+  Session that is already a conversation.
+- A group-level operation acts on the sessions and workspaces its confirmation
+  counted: both lists are frozen when the dialog opens.
+- Nothing is written before the stored group document arrives, and an edit made
+  during the load no longer replaces the stored groups with a document built
+  from an empty list.
+- A corrupt or unreadable stored document answers `500` instead of an empty
+  document, so the Client keeps its localStorage mirror instead of showing an
+  installation with no groups.
+- The archived-only view drops Workspaces with no archived row, as the shipped
+  browser does.
+- Adding a Workspace opens its Session, the way the shipped picker does.
+- A Session with no stored title reads as "Untitled" and the automatic first-use
+  Workspace reads as the localized default name, instead of a directory name or
+  raw id.
+- An unchanged title in a rename dialog is saved, so confirming the prefill can
+  pin an automatic title, as the shipped dialog allows.
 - Spawned subagent sessions no longer take a row of their own. The session
   catalog carries them (`origin: 'subagent'`) and the shipped browser shows them
   under their parent's header; the shadowing tree rendered them as ordinary rows
@@ -88,6 +129,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Requires `0.2.2-rc.1` or newer; the development dependencies, the README and
+  `engines.dsh` name the same baseline. The package declares
+  `dsh.manifestVersion: 1`.
+- The locale dictionaries live in `i18n.ts` and are resolved through the
+  framework `t` seat; the component test derives its English copy from the same
+  dictionary instead of a second copy.
+
 - Rendering derives the visible rows, the content counts and the move
   destinations once per snapshot rather than once per render site, and member
   lookup is a map instead of a linear scan, so a group tree no longer costs
@@ -155,5 +203,6 @@ First public release.
   git install that declares `prepare` is rejected outright. The artifacts travel
   with the repository and CI fails if a rebuild differs from them.
 
-[Unreleased]: https://github.com/GT-610/dsh-workspace-organize/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/GT-610/dsh-workspace-organize/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/GT-610/dsh-workspace-organize/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/GT-610/dsh-workspace-organize/releases/tag/v0.1.0
