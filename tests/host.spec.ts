@@ -8,12 +8,13 @@
  * an environment.
  */
 import { EventEmitter } from 'node:events'
-import { homedir } from 'node:os'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve as resolvePath } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { IncomingMessage } from 'node:http'
-import { MAX_DOCUMENT_BYTES } from '../src/shared/contract.ts'
-import { readBody, resolveDshHome, sameOriginWrite } from '../src/index.ts'
+import { MAX_DOCUMENT_BYTES, emptyGroupDocument } from '../src/shared/contract.ts'
+import { readBody, readStoredDocument, resolveDshHome, sameOriginWrite } from '../src/index.ts'
 
 /** A minimal request carrying only headers. */
 function request(headers: Record<string, string>): IncomingMessage {
@@ -134,5 +135,27 @@ describe('resolveDshHome', () => {
 
   it('returns an absolute path for a relative override', () => {
     expect(resolveDshHome({ DSH_HOME: 'relative/home' })).toBe(resolvePath('relative/home'))
+  })
+})
+
+describe('readStoredDocument', () => {
+  it('reads a valid document, treats a missing file as empty, and refuses a corrupt one', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-dwo-'))
+    const file = join(dir, 'groups.json')
+    const doc = { version: 1 as const, groups: [{ id: 'g', name: 'G', workspaceIds: [] }] }
+    try {
+      // A fresh install has no file, and that is not an error.
+      await expect(readStoredDocument(file)).resolves.toEqual(emptyGroupDocument())
+      await writeFile(file, JSON.stringify(doc), 'utf8')
+      await expect(readStoredDocument(file)).resolves.toEqual(doc)
+      // An unreadable document must not read as "no groups": the Client would
+      // drop its mirror and show an empty tree.
+      await writeFile(file, '{not json', 'utf8')
+      await expect(readStoredDocument(file)).rejects.toThrow()
+      await writeFile(file, JSON.stringify({ groups: [{ id: '', name: 'G', workspaceIds: [] }] }), 'utf8')
+      await expect(readStoredDocument(file)).rejects.toThrow('stored group document is invalid')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

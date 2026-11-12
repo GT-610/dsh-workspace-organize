@@ -61,6 +61,14 @@ function fakeServices() {
   } satisfies Services
 }
 
+/** The Host's running-work refusal, in the shape the browser reads. */
+function archiveRefusal(sessionId: string) {
+  return Object.assign(new Error('session-active'), {
+    name: 'WorkspaceArchiveError',
+    rpcError: { code: 'workspace/session-active', details: { sessionId, activity: [{ kind: 'turn' }] } },
+  })
+}
+
 /**
  * Props for one mount: real hooks, fake snapshots, recorded operations.
  * @param listPhase - arrival lifecycle of the session catalog; `pending` is an
@@ -796,15 +804,12 @@ describe('GroupedBrowser labels', () => {
 describe('GroupedBrowser stop-and-archive consent', () => {
   it('warns about running sessions and only stops the ones it counted', async () => {
     const services = fakeServices()
-    const refusal = (sessionId: string) => Object.assign(new Error('session-active'), {
-      name: 'WorkspaceArchiveError',
-      rpcError: { code: 'workspace/session-active', details: { sessionId, activity: [{ kind: 'turn' }] } },
-    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     services.archiveSession = vi.fn((sessionId: string, options?: { stopActivity?: boolean }) => {
       if (options?.stopActivity === true) return Promise.resolve()
       // `run` was running when the dialog opened and may be stopped; `idle`
       // started running while it was up, so this refusal must not stop it.
-      return Promise.reject(refusal(sessionId))
+      return Promise.reject(archiveRefusal(sessionId))
     })
     const current = sessionRow('blank-current', {
       blank: true,
@@ -832,6 +837,7 @@ describe('GroupedBrowser stop-and-archive consent', () => {
       expect(services.archiveSession).toHaveBeenCalledWith('run', { stopActivity: true })
     })
     expect(services.archiveSession).not.toHaveBeenCalledWith('idle', { stopActivity: true })
+    expect(warn).toHaveBeenCalledWith('workspace-organize: archive refused', 'idle', expect.any(Error))
   })
 })
 
