@@ -37,6 +37,16 @@ _Nothing yet._
   do not open, because an archived session cannot be viewed.
 
 ### Fixed
+- Enter or Space on a row's own button no longer bubbles to the row handler,
+  which used to open or expand the row and cancel the button's activation.
+- A delayed running-work refusal no longer replaces a dialog the operator opened
+  while the archive request was pending.
+- Session search matches the title the row displays — the durable title or the
+  localized Untitled label — instead of the directory-derived `displayTitle`.
+  Blank placeholders still never match.
+- Group roll-ups skip subagent rows; the parent already counts its running
+  children, so a parent and child no longer report two running sessions.
+
 - Group-document writes from the desktop shell are stored again. The shell
   forwards `/api/*` through its authenticated reverse proxy, which removes
   `Origin` and `Sec-Fetch-Site`; the write fence treated that shape as a
@@ -141,6 +151,9 @@ _Nothing yet._
   because a folded bucket would hide the very rows it exists to reveal.
 
 ### Changed
+- Keyboard focus reveals the workspace and group action strips, and hides a
+  focused group's count, so their menu and New Session controls are reachable.
+
 
 - The chrome follows the 0.2.2 stylesheet: the sidebar's own row padding, label
   gap and paint-inset variables, 24px action targets, the 28/32px search field,

@@ -91,6 +91,9 @@ export const STYLES = `
 @media (hover:hover) { .dwo-row:hover .dwo-actions { display:inline-flex; } }
 html[data-input-modality=keyboard] .dwo-session-row:focus-within .dwo-actions { display:inline-flex; }
 html[data-input-modality=keyboard] .dwo-session-row:focus-within .dwo-time { display:none; }
+html[data-input-modality=keyboard] .dwo-ws-row:focus-within .dwo-actions,
+html[data-input-modality=keyboard] .dwo-group-row:focus-within .dwo-actions { display:inline-flex; }
+html[data-input-modality=keyboard] .dwo-group-row:focus-within .dwo-count { display:none; }
 .dwo-act-btn { border-radius:var(--dsw-radius-xs); cursor:pointer; width:24px; height:24px; color:var(--dsw-alias-label-tertiary); background:0 0; border:none; flex:none; justify-content:center; align-items:center; margin:-4px; padding:0; display:inline-flex; }
 .dwo-act-btn:focus-visible { outline-offset:-2px; }
 @media (hover:hover) { .dwo-act-btn:hover { color:var(--dsw-alias-label-primary); } }

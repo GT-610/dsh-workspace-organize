@@ -403,8 +403,16 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   // shadows: without a bucket of our own such a Session has no row anywhere,
   // even though it opens, runs and archives like any other.
   const unowned = useMemo(
-    () => unownedSessionIds(list, workspaces, main, archived, normalizedQuery, archivedFilter),
-    [list, workspaces, main, archived, normalizedQuery, archivedFilter],
+    () => unownedSessionIds(
+      list,
+      workspaces,
+      main,
+      archived,
+      normalizedQuery,
+      archivedFilter,
+      messages.untitled,
+    ),
+    [list, workspaces, main, archived, normalizedQuery, archivedFilter, messages.untitled],
   )
 
   /**
@@ -488,7 +496,8 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     archived,
     query: normalizedQuery,
     archivedFilter,
-  }), [list, main, archived, normalizedQuery, archivedFilter])
+    untitled: messages.untitled,
+  }), [list, main, archived, normalizedQuery, archivedFilter, messages.untitled])
 
   // Every Workspace's rows, derived once per snapshot instead of once per render
   // site: the tree needs the visible list, the group header needs the content
@@ -578,7 +587,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         return
       }
       const row = list.byId[sessionId]
-      setDialog({
+      // A refusal can arrive after the operator opened another dialog; keep
+      // that newer dialog instead of replacing it with this older request.
+      setDialog(current => current ?? {
         kind: 'archiveSession',
         sessionId,
         title: row?.title ?? row?.displayTitle ?? '',
@@ -687,6 +698,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         tabIndex={0}
         onClick={open}
         onKeyDown={(event) => {
+          // A child button owns its own Enter/Space; never let the row swallow
+          // the activation.
+          if (event.target !== event.currentTarget) return
           if (event.key !== 'Enter' && event.key !== ' ') return
           event.preventDefault()
           open()
@@ -781,6 +795,8 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           tabIndex={0}
           onClick={() => setExpanded(key, !isOpen)}
           onKeyDown={(event) => {
+            // A child button owns its own Enter/Space.
+            if (event.target !== event.currentTarget) return
             if (event.key !== 'Enter' && event.key !== ' ') return
             event.preventDefault()
             setExpanded(key, !isOpen)
@@ -909,6 +925,8 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           tabIndex={0}
           onClick={() => setExpanded(key, !isOpen)}
           onKeyDown={(event) => {
+            // A child button owns its own Enter/Space.
+            if (event.target !== event.currentTarget) return
             if (event.key !== 'Enter' && event.key !== ' ') return
             event.preventDefault()
             setExpanded(key, !isOpen)
@@ -978,6 +996,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           tabIndex={0}
           onClick={() => setExpanded(UNOWNED_KEY, !isOpen)}
           onKeyDown={(event) => {
+            if (event.target !== event.currentTarget) return
             if (event.key !== 'Enter' && event.key !== ' ') return
             event.preventDefault()
             setExpanded(UNOWNED_KEY, !isOpen)

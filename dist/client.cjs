@@ -582,12 +582,26 @@ function partitionRows(ids, list, main, archived) {
 	];
 }
 /**
+* The title a Session row shows for search purposes.
+*
+* The durable title, or the localized Untitled label the row prints when none
+* is stored — never `displayTitle`, which falls back to a directory basename
+* the row does not render. A blank placeholder has no conversational title and
+* never matches.
+* @param row - the Session's list row.
+* @param untitled - localized label for a Session with no stored title.
+* @returns the lower-cased searchable title, or `''` for a blank placeholder.
+*/
+function searchableTitle(row, untitled) {
+	return row.blank ? "" : row.title || untitled;
+}
+/**
 * The sessions one Workspace shows, in render order.
 *
-* A blank placeholder never matches a query: its canonical title is the
-* directory name, so matching it would tie search to one language. The
-* surviving placeholder leads its Workspace, matching the order
-* `sectionMembers` gives placeholders in the shipped tree.
+* A blank placeholder never matches a query: it is the New Session placeholder,
+* not a conversation, and its label is UI copy. The surviving placeholder leads
+* its Workspace, matching the order `sectionMembers` gives placeholders in the
+* shipped tree.
 *
 * Two partitions apply to whatever the filter and query leave: the placeholder
 * leads, and archived rows trail the live ones — where the shipped manual order
@@ -596,12 +610,12 @@ function partitionRows(ids, list, main, archived) {
 * @returns visible session ids, placeholder first, archived last.
 */
 function visibleSessionIds(selection) {
-	const { list, workspace, main, archived, query, archivedFilter = "default" } = selection;
+	const { list, workspace, main, archived, query, archivedFilter = "default", untitled = "Untitled" } = selection;
 	const shown = workspace.sessionIds.filter((id) => sessionShown(list.byId[id], id, main, archived, archivedFilter));
 	return partitionRows(query === "" ? shown : shown.filter((id) => {
 		const row = list.byId[id];
-		if (row === void 0 || row.blank) return false;
-		return row.displayTitle.toLowerCase().includes(query);
+		if (row === void 0) return false;
+		return searchableTitle(row, untitled).toLowerCase().includes(query);
 	}), list, main, archived);
 }
 /**
@@ -625,16 +639,17 @@ function visibleSessionIds(selection) {
 * @param archived - registry-global archive set.
 * @param query - trimmed, lower-cased search query; empty lists everything.
 * @param archivedFilter - archived-row visibility choice; omitted hides them.
+* @param untitled - localized label for a Session with no stored title.
 * @returns visible unowned session ids, placeholder first, archived last.
 */
-function unownedSessionIds(list, workspaces, main, archived, query, archivedFilter = "default") {
+function unownedSessionIds(list, workspaces, main, archived, query, archivedFilter = "default", untitled = "Untitled") {
 	const accounted = /* @__PURE__ */ new Set();
 	for (const workspace of workspaces) for (const id of workspace.sessionIds) accounted.add(id);
 	return partitionRows(list.ids.filter((id) => !accounted.has(id) && sessionShown(list.byId[id], id, main, archived, archivedFilter)).filter((id) => {
 		if (query === "") return true;
 		const row = list.byId[id];
-		if (row === void 0 || row.blank) return false;
-		return row.displayTitle.toLowerCase().includes(query);
+		if (row === void 0) return false;
+		return searchableTitle(row, untitled).toLowerCase().includes(query);
 	}).toSorted((left, right) => {
 		const at = list.byId[left]?.updatedAt ?? 0;
 		const other = list.byId[right]?.updatedAt ?? 0;
@@ -716,9 +731,11 @@ function rowStatus(statuses, id, messages, runningFallback = false, runningSubag
 * Roll member Workspaces up into one group status.
 *
 * A group holds no sessions of its own, so its dot and count come from the
-* members. Archived rows are already out of the way and never counted. A row
-* counts as running through the unified status first, the summary's running
-* flag next, and its running subagents last — the same fallbacks a row uses.
+* members. Archived rows are already out of the way and never counted, and a
+* subagent child is skipped: its parent already counts it through
+* {@link runningSubagentCount}. A row counts as running through the unified
+* status first, the summary's running flag next, and its running subagents last
+* — the same fallbacks a row uses.
 * @param members - the group's live member Workspaces.
 * @param list - sessions list snapshot, for summary fallbacks.
 * @param statuses - unified UI status snapshot.
@@ -730,6 +747,7 @@ function groupRollUp(members, list, statuses, archived) {
 	let pending = 0;
 	for (const member of members) for (const id of member.sessionIds) {
 		if (archived.has(id)) continue;
+		if (list.byId[id]?.origin === "subagent") continue;
 		const status = statuses.get(id);
 		if (status?.pendingInteraction !== void 0) {
 			pending += 1;
@@ -904,6 +922,9 @@ const STYLES = `
 @media (hover:hover) { .dwo-row:hover .dwo-actions { display:inline-flex; } }
 html[data-input-modality=keyboard] .dwo-session-row:focus-within .dwo-actions { display:inline-flex; }
 html[data-input-modality=keyboard] .dwo-session-row:focus-within .dwo-time { display:none; }
+html[data-input-modality=keyboard] .dwo-ws-row:focus-within .dwo-actions,
+html[data-input-modality=keyboard] .dwo-group-row:focus-within .dwo-actions { display:inline-flex; }
+html[data-input-modality=keyboard] .dwo-group-row:focus-within .dwo-count { display:none; }
 .dwo-act-btn { border-radius:var(--dsw-radius-xs); cursor:pointer; width:24px; height:24px; color:var(--dsw-alias-label-tertiary); background:0 0; border:none; flex:none; justify-content:center; align-items:center; margin:-4px; padding:0; display:inline-flex; }
 .dwo-act-btn:focus-visible { outline-offset:-2px; }
 @media (hover:hover) { .dwo-act-btn:hover { color:var(--dsw-alias-label-primary); } }
@@ -1150,13 +1171,14 @@ function GroupedBrowser(props) {
 		const status = statuses.get(sessionId);
 		return (status?.running ?? list.byId[sessionId]?.running) === true || status?.pendingInteraction !== void 0 || runningSubagentCount(list, sessionId, statuses) > 0;
 	}, [list, statuses]);
-	const unowned = (0, react.useMemo)(() => unownedSessionIds(list, workspaces, main, archived, normalizedQuery, archivedFilter), [
+	const unowned = (0, react.useMemo)(() => unownedSessionIds(list, workspaces, main, archived, normalizedQuery, archivedFilter, messages.untitled), [
 		list,
 		workspaces,
 		main,
 		archived,
 		normalizedQuery,
-		archivedFilter
+		archivedFilter,
+		messages.untitled
 	]);
 	/**
 	* Whether the bucket has a row under any query and any archive filter.
@@ -1236,13 +1258,15 @@ function GroupedBrowser(props) {
 		main,
 		archived,
 		query: normalizedQuery,
-		archivedFilter
+		archivedFilter,
+		untitled: messages.untitled
 	}), [
 		list,
 		main,
 		archived,
 		normalizedQuery,
-		archivedFilter
+		archivedFilter,
+		messages.untitled
 	]);
 	const visibleByWorkspace = (0, react.useMemo)(() => {
 		const out = /* @__PURE__ */ new Map();
@@ -1305,7 +1329,7 @@ function GroupedBrowser(props) {
 				return;
 			}
 			const row = list.byId[sessionId];
-			setDialog({
+			setDialog((current) => current ?? {
 				kind: "archiveSession",
 				sessionId,
 				title: row?.title ?? row?.displayTitle ?? "",
@@ -1414,6 +1438,7 @@ function GroupedBrowser(props) {
 			tabIndex: 0,
 			onClick: open,
 			onKeyDown: (event) => {
+				if (event.target !== event.currentTarget) return;
 				if (event.key !== "Enter" && event.key !== " ") return;
 				event.preventDefault();
 				open();
@@ -1529,6 +1554,7 @@ function GroupedBrowser(props) {
 				tabIndex: 0,
 				onClick: () => setExpanded(key, !isOpen),
 				onKeyDown: (event) => {
+					if (event.target !== event.currentTarget) return;
 					if (event.key !== "Enter" && event.key !== " ") return;
 					event.preventDefault();
 					setExpanded(key, !isOpen);
@@ -1682,6 +1708,7 @@ function GroupedBrowser(props) {
 				tabIndex: 0,
 				onClick: () => setExpanded(key, !isOpen),
 				onKeyDown: (event) => {
+					if (event.target !== event.currentTarget) return;
 					if (event.key !== "Enter" && event.key !== " ") return;
 					event.preventDefault();
 					setExpanded(key, !isOpen);
@@ -1764,6 +1791,7 @@ function GroupedBrowser(props) {
 				tabIndex: 0,
 				onClick: () => setExpanded(UNOWNED_KEY, !isOpen),
 				onKeyDown: (event) => {
+					if (event.target !== event.currentTarget) return;
 					if (event.key !== "Enter" && event.key !== " ") return;
 					event.preventDefault();
 					setExpanded(UNOWNED_KEY, !isOpen);

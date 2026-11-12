@@ -372,6 +372,65 @@ function rowButtons(row: Element): HTMLElement[] {
   return within(row as HTMLElement).getAllByRole('button', { hidden: true })
 }
 
+describe('GroupedBrowser keyboard and search', () => {
+  it('does not let the row swallow a child control\'s Enter', async () => {
+    const { services } = mountBrowser()
+    await screen.findByText('named')
+    const row = document.querySelector('[data-row-key="session:named"]') as Element
+    const archive = rowButtons(row)[0] as HTMLElement
+    archive.focus()
+    // jsdom has no native button activation on Enter, but the regression is the
+    // bubbled row handler: it used to preventDefault and open the Session.
+    await userEvent.keyboard('{Enter}')
+    expect(services.openSession).not.toHaveBeenCalled()
+    await userEvent.click(archive)
+    await waitFor(() => { expect(services.archiveSession).toHaveBeenCalledWith('named') })
+  })
+
+  it('keeps a newer dialog when an older archive refusal arrives', async () => {
+    const services = fakeServices()
+    let refuse: ((error: unknown) => void) | undefined
+    services.archiveSession = vi.fn(() => new Promise<void>((_resolve, reject) => { refuse = reject }))
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const named = sessionRow('named')
+    render(<GroupedBrowser {...propsFor([workspaceView('repo', ['named', 'blank-current'])], [current, named], services)} />)
+    await screen.findByText('named')
+    const row = document.querySelector('[data-row-key="session:named"]') as Element
+    await userEvent.click(rowButtons(row)[0] as HTMLElement)
+    await chooseViewOption(messages.newGroup)
+    const dialog = await screen.findByRole('dialog', { hidden: true })
+    expect(within(dialog).getByText(messages.newGroup)).toBeDefined()
+    await act(async () => { refuse?.(archiveRefusal('named')) })
+    // The delayed rejection must not replace the dialog the operator opened.
+    expect(screen.getByRole('dialog', { hidden: true })).toBe(dialog)
+    expect(within(dialog).getByText(messages.newGroup)).toBeDefined()
+  })
+
+  it('searches the title a row displays, not its directory fallback', async () => {
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const auto = sessionRow('auto', { title: undefined, displayTitle: 'dir-name' })
+    render(<GroupedBrowser {...propsFor([workspaceView('repo', ['auto', 'blank-current'])], [current, auto], fakeServices())} />)
+    await screen.findByText(messages.untitled)
+    await userEvent.click(document.querySelector('.dwo-search-btn') as HTMLElement)
+    const input = await screen.findByPlaceholderText(messages.search)
+    await userEvent.type(input, 'untitled')
+    await waitFor(() => {
+      expect(document.querySelector('[data-row-key="session:auto"]')).not.toBeNull()
+    })
+    await userEvent.clear(input)
+    await userEvent.type(input, 'dir-name')
+    await waitFor(() => {
+      expect(document.querySelector('[data-row-key="session:auto"]')).toBeNull()
+    })
+  })
+})
+
 describe('GroupedBrowser shipped chrome', () => {
   it('uses the shipped New Session glyph on a workspace row', async () => {
     mountBrowser()
