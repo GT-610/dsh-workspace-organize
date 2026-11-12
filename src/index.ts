@@ -67,9 +67,40 @@ export function resolveDshHome(env: Readonly<Record<string, string | undefined>>
 }
 
 /**
+ * Read and validate one stored group document.
+ *
+ * A missing file is a fresh install and reads as an empty document. Any other
+ * failure — an unreadable file, malformed JSON, or a shape the validator
+ * rejects — is thrown: answering "empty" there would let the Client discard its
+ * localStorage mirror and show an installation with no groups.
+ * @param file - absolute path of the stored document.
+ * @returns the normalized document.
+ * @throws when the file exists but cannot be read or validated.
+ */
+export async function readStoredDocument(file: string): Promise<GroupDocument> {
+  let text: string
+  try {
+    text = await readFile(file, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptyGroupDocument()
+    throw error
+  }
+  const doc = normalizeGroupDocument(JSON.parse(text))
+  if (doc === null) throw new Error('stored group document is invalid')
+  return doc
+}
+
+/**
  * Whether a write request comes from the same origin as the page that serves
- * this route. Browsers always attach `Sec-Fetch-Site` (modern) or `Origin`;
- * a request carrying neither is not a browser form/JSON POST we should accept.
+ * this route.
+ *
+ * Browsers always attach `Sec-Fetch-Site` (modern) or `Origin`; a cross-site
+ * browser write therefore carries one and is refused unless it names this Host.
+ * A request carrying neither is not a browser form/JSON POST, and the desktop
+ * shell uses exactly that shape: its authenticated reverse proxy strips both
+ * headers before forwarding `/api/*` to this server. Refusing them made every
+ * save from the desktop app a 403 while reads (which have no fence) kept working.
+ * The loopback server remains the boundary for local code either way.
  * @param req - incoming request.
  * @returns whether the write may proceed.
  */
@@ -84,7 +115,7 @@ export function sameOriginWrite(req: IncomingMessage): boolean {
       return false
     }
   }
-  return false
+  return true
 }
 
 /**
@@ -160,12 +191,8 @@ export function apply(ctx: Context): (() => void) | undefined {
   let cache: GroupDocument | undefined
   const readDoc = async (): Promise<GroupDocument> => {
     if (cache !== undefined) return cache
-    try {
-      cache = normalizeGroupDocument(JSON.parse(await readFile(file, 'utf8'))) ?? undefined
-    } catch {
-      cache = undefined
-    }
-    return cache ?? emptyGroupDocument()
+    cache = await readStoredDocument(file)
+    return cache
   }
 
   // Serialized write chain with an atomic tmp+rename commit.

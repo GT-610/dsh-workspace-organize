@@ -10,7 +10,7 @@ import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-sess
 import type { WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SessionStatus, SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
-import { messages } from '../src/client/i18n.ts'
+import { messages } from './i18n.ts'
 import {
   contentSessionIds,
   groupRollUp,
@@ -31,6 +31,7 @@ const id = (value: string): SessionId => value as SessionId
 function row(value: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id: id(value),
+    title: value,
     displayTitle: value,
     running: false,
     blank: false,
@@ -45,6 +46,7 @@ function list(rows: readonly SessionSummary[]): SessionListState {
   return {
     ids: rows.map(entry => entry.id),
     byId: Object.fromEntries(rows.map(entry => [entry.id, entry])),
+    projectionsBySession: {},
   } as unknown as SessionListState
 }
 
@@ -169,6 +171,57 @@ describe('visibleSessionIds', () => {
   })
 })
 
+describe('visibleSessionIds render order', () => {
+  it('keeps an opened non-blank session in its place', () => {
+    // Only a blank placeholder leads. The main view also retains an opened
+    // conversation, and hoisting that one would reshuffle the tree on click.
+    const a = row('a')
+    const b = row('b', { retainedBy: { mainView: 1 } as SessionSummary['retainedBy'] })
+    const sessions = list([a, b, row('c')])
+    const ids = visibleSessionIds({
+      list: sessions,
+      workspace: workspace('w', ['a', 'b', 'c']),
+      main: mainSessionId(sessions),
+      archived: new Set(),
+      query: '',
+    })
+    expect(ids).toEqual(['a', 'b', 'c'])
+  })
+
+  it('keeps a non-blank unowned session in recency order', () => {
+    const a = row('a', { updatedAt: 30 })
+    const b = row('b', { updatedAt: 20, retainedBy: { mainView: 1 } as SessionSummary['retainedBy'] })
+    const c = row('c', { updatedAt: 10 })
+    expect(unownedSessionIds(list([a, b, c]), [], mainSessionId(list([a, b, c])), new Set(), ''))
+      .toEqual(['a', 'b', 'c'])
+  })
+})
+
+describe('searchable title', () => {
+  it('searches what the row displays, not the directory fallback', () => {
+    const untitled = row('no-title', { title: undefined, displayTitle: 'repo-dir' })
+    const sessions = list([untitled])
+    const base = {
+      list: sessions,
+      workspace: workspace('w', ['no-title']),
+      main: undefined,
+      archived: new Set<SessionId>(),
+      untitled: 'Untitled',
+    }
+    expect(visibleSessionIds({ ...base, query: 'untitled' })).toEqual([id('no-title')])
+    expect(visibleSessionIds({ ...base, query: 'repo-dir' })).toEqual([])
+  })
+
+  it('uses the same rule in the unowned bucket', () => {
+    const untitled = row('loose', { title: undefined, displayTitle: 'elsewhere' })
+    const sessions = list([untitled])
+    expect(unownedSessionIds(sessions, [], undefined, new Set(), 'untitled', 'default', 'Untitled'))
+      .toEqual([id('loose')])
+    expect(unownedSessionIds(sessions, [], undefined, new Set(), 'elsewhere', 'default', 'Untitled'))
+      .toEqual([])
+  })
+})
+
 describe('archived-row visibility', () => {
   const current = row('blank-current', { blank: true, retainedBy: { mainView: 1 } as SessionSummary['retainedBy'] })
   const named = row('named')
@@ -203,8 +256,8 @@ describe('archived-row visibility', () => {
   it('trails an archived match behind a live one in search results', () => {
     // Both match, and the archived row sits first in membership order: the
     // live one still has to render first.
-    const older = row('older-archived', { displayTitle: 'weekly report' })
-    const newer = row('newer-live', { displayTitle: 'weekly report' })
+    const older = row('older-archived', { title: 'weekly report', displayTitle: 'weekly report' })
+    const newer = row('newer-live', { title: 'weekly report', displayTitle: 'weekly report' })
     const both = list([older, newer])
     const ordered = workspace('repo', ['older-archived', 'newer-live'])
     const matched = visibleSessionIds(selection(both, ordered, 'report', ['older-archived'], 'show'))
@@ -219,11 +272,11 @@ describe('unownedSessionIds', () => {
     updatedAt: 50,
   })
   const spent = row('blank-spent', { blank: true, updatedAt: 90 })
-  const oldest = row('loose-old', { displayTitle: 'Alpha note', updatedAt: 10 })
-  const newest = row('loose-new', { displayTitle: 'Beta note', updatedAt: 80 })
-  const tied = row('loose-tied', { displayTitle: 'Gamma note', updatedAt: 80 })
-  const owned = row('owned', { displayTitle: 'Owned note', updatedAt: 70 })
-  const gone = row('loose-archived', { displayTitle: 'Delta note', updatedAt: 95 })
+  const oldest = row('loose-old', { title: 'Alpha note', displayTitle: 'Alpha note', updatedAt: 10 })
+  const newest = row('loose-new', { title: 'Beta note', displayTitle: 'Beta note', updatedAt: 80 })
+  const tied = row('loose-tied', { title: 'Gamma note', displayTitle: 'Gamma note', updatedAt: 80 })
+  const owned = row('owned', { title: 'Owned note', displayTitle: 'Owned note', updatedAt: 70 })
+  const gone = row('loose-archived', { title: 'Delta note', displayTitle: 'Delta note', updatedAt: 95 })
   const sessions = list([current, spent, oldest, newest, tied, owned, gone])
   const target = workspace('repo', ['owned'])
   // `gone` is archived throughout, so a case that wants it on screen asks for a
@@ -249,8 +302,8 @@ describe('unownedSessionIds', () => {
   it('matches a query on the title, and never on a blank placeholder', () => {
     expect(unowned('beta')).toEqual(['loose-new'])
     expect(unowned('note')).toEqual(['loose-new', 'loose-tied', 'loose-old'])
-    // The placeholder's canonical title is a directory name, so it is excluded
-    // from search exactly like the workspace listing excludes it.
+    // The placeholder is not a conversation and never matches, exactly like the
+    // workspace listing excludes it.
     expect(unowned('blank')).toEqual([])
   })
 
@@ -283,11 +336,42 @@ describe('groupRollUp', () => {
   })
 
   it('counts running and waiting members and ignores archived rows', () => {
-    expect(groupRollUp(members, snapshot, new Set([id('archived-run')]))).toEqual({ running: 1, pending: 1 })
+    expect(groupRollUp(members, list([]), snapshot, new Set([id('archived-run')])))
+      .toEqual({ running: 1, pending: 1 })
   })
 
   it('counts a session with an unknown status as neither', () => {
-    expect(groupRollUp([workspace('c', ['unknown'])], snapshot, new Set())).toEqual({ running: 0, pending: 0 })
+    expect(groupRollUp([workspace('c', ['unknown'])], list([]), snapshot, new Set()))
+      .toEqual({ running: 0, pending: 0 })
+  })
+
+  it('counts a parent and its running child once', () => {
+    const parent = row('parent')
+    const child = row('child', { origin: 'subagent', parentId: id('parent') })
+    const withChild = list([parent, child])
+    ;(withChild.projectionsBySession as Record<string, unknown>).parent = {
+      values: { subagentCatalog: [{ id: id('child') }] },
+    }
+    const status = statuses({ child: { running: true } })
+    // The child is also in the Workspace membership; the group must still
+    // report one running Session, not the parent plus the child.
+    expect(groupRollUp([workspace('g', ['parent', 'child'])], withChild, status, new Set()))
+      .toEqual({ running: 1, pending: 0 })
+  })
+
+  it('falls back to the summary running flag and counts running subagents', () => {
+    const parent = row('parent')
+    const child = row('child', { parentId: id('parent') })
+    const summaryRunning = row('summary-running', { running: true })
+    const withChild = list([parent, child, summaryRunning])
+    ;(withChild.projectionsBySession as Record<string, unknown>).parent = {
+      values: { subagentCatalog: [{ id: id('child') }] },
+    }
+    const childStatus = statuses({ child: { running: true } })
+    expect(groupRollUp([workspace('d', ['summary-running'])], withChild, new Map(), new Set()))
+      .toEqual({ running: 1, pending: 0 })
+    expect(groupRollUp([workspace('e', ['parent'])], withChild, childStatus, new Set()))
+      .toEqual({ running: 1, pending: 0 })
   })
 })
 

@@ -16,7 +16,7 @@ import { MAX_GROUP_NAME_LENGTH } from '../src/shared/contract.ts'
 import { GroupedBrowser } from '../src/client/Browser.tsx'
 import type { OrganizeBrowserProps, Services } from '../src/client/contract.ts'
 import { ARCHIVED_FILTER_STORAGE_KEY, EXPANSION_STORAGE_KEY } from '../src/client/groups.ts'
-import { messages } from '../src/client/i18n.ts'
+import { messages, translate } from './i18n.ts'
 
 const id = (value: string): SessionId => value as SessionId
 
@@ -24,6 +24,7 @@ const id = (value: string): SessionId => value as SessionId
 function sessionRow(value: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id: id(value),
+    title: value,
     displayTitle: value,
     running: false,
     blank: false,
@@ -60,6 +61,14 @@ function fakeServices() {
   } satisfies Services
 }
 
+/** The Host's running-work refusal, in the shape the browser reads. */
+function archiveRefusal(sessionId: string) {
+  return Object.assign(new Error('session-active'), {
+    name: 'WorkspaceArchiveError',
+    rpcError: { code: 'workspace/session-active', details: { sessionId, activity: [{ kind: 'turn' }] } },
+  })
+}
+
 /**
  * Props for one mount: real hooks, fake snapshots, recorded operations.
  * @param listPhase - arrival lifecycle of the session catalog; `pending` is an
@@ -72,10 +81,12 @@ function propsFor(
   statuses: SessionStatusSnapshot = new Map(),
   archived: readonly string[] = [],
   listPhase: SessionListState['phase'] = 'ready',
+  wide = true,
 ): OrganizeBrowserProps {
   const list = {
     ids: sessions.map(row => row.id),
     byId: Object.fromEntries(sessions.map(row => [row.id, row])),
+    projectionsBySession: {},
     phase: listPhase,
   } as unknown as SessionListState
   const workspaceSnapshot = {
@@ -86,12 +97,13 @@ function propsFor(
     phase: 'ready',
   }
   return {
-    wide: true,
+    wide,
     expandSidebar: vi.fn(),
     useWorkspaces: <T,>(select: (snapshot: unknown) => T): T => select(workspaceSnapshot),
     useSessions: <T,>(select: (snapshot: unknown) => T): T => select(list),
     useSessionStatus: <T,>(select: (snapshot: unknown) => T): T => select(statuses),
     usePanelInfo: <T,>(select: (snapshot: unknown) => T): T => select({ activePanelId: null }),
+    t: translate(),
     services,
   } as unknown as OrganizeBrowserProps
 }
@@ -204,7 +216,7 @@ describe('GroupedBrowser rows', () => {
  */
 function mountUnowned(
   services: Services = fakeServices(),
-  extra: readonly SessionSummary[] = [sessionRow('loose', { displayTitle: 'Loose conversation' })],
+  extra: readonly SessionSummary[] = [sessionRow('loose', { title: 'Loose conversation', displayTitle: 'Loose conversation' })],
   archived: readonly string[] = [],
 ) {
   const named = sessionRow('named')
@@ -359,6 +371,97 @@ describe('GroupedBrowser unowned bucket', () => {
 function rowButtons(row: Element): HTMLElement[] {
   return within(row as HTMLElement).getAllByRole('button', { hidden: true })
 }
+
+describe('GroupedBrowser keyboard and search', () => {
+  it('does not let the row swallow a child control\'s Enter', async () => {
+    const { services } = mountBrowser()
+    await screen.findByText('named')
+    const row = document.querySelector('[data-row-key="session:named"]') as Element
+    const archive = rowButtons(row)[0] as HTMLElement
+    archive.focus()
+    // jsdom has no native button activation on Enter, but the regression is the
+    // bubbled row handler: it used to preventDefault and open the Session.
+    await userEvent.keyboard('{Enter}')
+    expect(services.openSession).not.toHaveBeenCalled()
+    await userEvent.click(archive)
+    await waitFor(() => { expect(services.archiveSession).toHaveBeenCalledWith('named') })
+  })
+
+  it('keeps a newer dialog when an older archive refusal arrives', async () => {
+    const services = fakeServices()
+    let refuse: ((error: unknown) => void) | undefined
+    services.archiveSession = vi.fn(() => new Promise<void>((_resolve, reject) => { refuse = reject }))
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const named = sessionRow('named')
+    render(<GroupedBrowser {...propsFor([workspaceView('repo', ['named', 'blank-current'])], [current, named], services)} />)
+    await screen.findByText('named')
+    const row = document.querySelector('[data-row-key="session:named"]') as Element
+    await userEvent.click(rowButtons(row)[0] as HTMLElement)
+    await chooseViewOption(messages.newGroup)
+    const dialog = await screen.findByRole('dialog', { hidden: true })
+    expect(within(dialog).getByText(messages.newGroup)).toBeDefined()
+    await act(async () => { refuse?.(archiveRefusal('named')) })
+    // The delayed rejection must not replace the dialog the operator opened.
+    expect(screen.getByRole('dialog', { hidden: true })).toBe(dialog)
+    expect(within(dialog).getByText(messages.newGroup)).toBeDefined()
+  })
+
+  it('searches the title a row displays, not its directory fallback', async () => {
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const auto = sessionRow('auto', { title: undefined, displayTitle: 'dir-name' })
+    render(<GroupedBrowser {...propsFor([workspaceView('repo', ['auto', 'blank-current'])], [current, auto], fakeServices())} />)
+    await screen.findByText(messages.untitled)
+    await userEvent.click(document.querySelector('.dwo-search-btn') as HTMLElement)
+    const input = await screen.findByPlaceholderText(messages.search)
+    await userEvent.type(input, 'untitled')
+    await waitFor(() => {
+      expect(document.querySelector('[data-row-key="session:auto"]')).not.toBeNull()
+    })
+    await userEvent.clear(input)
+    await userEvent.type(input, 'dir-name')
+    await waitFor(() => {
+      expect(document.querySelector('[data-row-key="session:auto"]')).toBeNull()
+    })
+  })
+})
+
+describe('GroupedBrowser shipped chrome', () => {
+  it('uses the shipped New Session glyph on a workspace row', async () => {
+    mountBrowser()
+    await screen.findByText('repo')
+    const row = document.querySelector('[data-row-key="workspace:repo"]') as Element
+    expect(rowButtons(row)[1]?.querySelector('[data-icon="new-chat"]')).not.toBeNull()
+  })
+
+  it('publishes row keys that match the rendered rows', async () => {
+    mountBrowser()
+    await screen.findByText('Work')
+    const list = document.querySelector('[data-row-keys]') as HTMLElement
+    expect(list).not.toBeNull()
+    const declared = list.getAttribute('data-row-keys')?.split('|') ?? []
+    const rendered = Array.from(list.querySelectorAll('[data-row-key]'))
+      .map(element => element.getAttribute('data-row-key'))
+    expect(declared).toEqual(rendered)
+  })
+
+  it('keeps the search field mounted and expands it through the header', async () => {
+    mountBrowser()
+    await screen.findByText('Work')
+    expect(document.querySelector('.dwo-search-input')).not.toBeNull()
+    expect(document.querySelector('.dwo-search.open')).toBeNull()
+    await userEvent.click(document.querySelector('.dwo-search-btn') as HTMLElement)
+    expect(document.querySelector('.dwo-search.open')).not.toBeNull()
+    expect(document.querySelector('.dwo-search-clear')).not.toBeNull()
+    await userEvent.click(document.querySelector('.dwo-search-clear') as HTMLElement)
+    expect(document.querySelector('.dwo-search.open')).toBeNull()
+  })
+})
 
 describe('GroupedBrowser menus', () => {
   it('opens the workspace menu and moves the workspace out of its group', async () => {
@@ -587,10 +690,19 @@ describe('GroupedBrowser archived rows', () => {
     expect(services.archiveSession).not.toHaveBeenCalledWith('blank-current')
   })
 
-  it('retries a refused archive once with the stop-then-archive path', async () => {
+  it('asks before stopping running work, then archives', async () => {
     const services = fakeServices()
+    // The Host's refusal shape: the class name and RPC code are what the
+    // browser reads; class identity is not shared across bundles.
+    const refusal = Object.assign(new Error('session-active'), {
+      name: 'WorkspaceArchiveError',
+      rpcError: {
+        code: 'workspace/session-active',
+        details: { sessionId: 'named', activity: [{ kind: 'turn' }] },
+      },
+    })
     services.archiveSession = vi.fn()
-      .mockRejectedValueOnce(new Error('session-active'))
+      .mockRejectedValueOnce(refusal)
       .mockResolvedValue(undefined)
     const current = sessionRow('blank-current', {
       blank: true,
@@ -601,10 +713,36 @@ describe('GroupedBrowser archived rows', () => {
     await screen.findByText('named')
     const row = document.querySelector('[data-row-key="session:named"]') as Element
     await userEvent.click(rowButtons(row)[0] as HTMLElement)
+    const dialog = await screen.findByRole('dialog', { hidden: true })
+    expect(within(dialog).getByText(messages.archiveConfirmTitle)).toBeDefined()
+    expect(within(dialog).getByText(messages.activityTurn)).toBeDefined()
+    // Nothing was stopped before the operator confirmed.
+    expect(services.archiveSession).toHaveBeenCalledTimes(1)
+    await userEvent.click(within(dialog).getByText(messages.archiveConfirmAction))
     await waitFor(() => {
       expect(services.archiveSession).toHaveBeenNthCalledWith(1, 'named')
       expect(services.archiveSession).toHaveBeenNthCalledWith(2, 'named', { stopActivity: true })
     })
+  })
+
+  it('does not stop work for a failure that is not a running-work refusal', async () => {
+    const services = fakeServices()
+    services.archiveSession = vi.fn().mockRejectedValue(new Error('carrier down'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const named = sessionRow('named')
+    render(<GroupedBrowser {...propsFor([workspaceView('repo', ['named', 'blank-current'])], [current, named], services)} />)
+    await screen.findByText('named')
+    const row = document.querySelector('[data-row-key="session:named"]') as Element
+    await userEvent.click(rowButtons(row)[0] as HTMLElement)
+    await waitFor(() => {
+      expect(warn).toHaveBeenCalledWith('workspace-organize: archive refused', 'named', expect.any(Error))
+    })
+    expect(services.archiveSession).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog', { hidden: true })).toBeNull()
   })
 
   it('reports a refused restore instead of leaving it unhandled', async () => {
@@ -640,7 +778,13 @@ function heldWrites() {
       })
     }
     bodies.push(String(init.body))
-    return new Promise((resolve) => { settles.push(ok => resolve({ ok })) })
+    return new Promise((resolve) => {
+      settles.push(ok => resolve({
+        ok,
+        status: ok ? 200 : 500,
+        text: async () => (ok ? '' : 'invalid group document'),
+      }))
+    })
   }))
   return { bodies, settles }
 }
@@ -682,7 +826,7 @@ describe('GroupedBrowser saves', () => {
     await waitFor(() => { expect(document.querySelector('.dwo-saving')).toBeNull() })
   })
 
-  it('keeps saying "saving" when the last write fails', async () => {
+  it('shows a retry control when the last write fails', async () => {
     const { settles } = heldWrites()
     mountBrowser()
     await screen.findByText('Work')
@@ -691,6 +835,143 @@ describe('GroupedBrowser saves', () => {
     await act(async () => { settles[0]?.(true) })
     await waitFor(() => { expect(settles).toHaveLength(2) })
     await act(async () => { settles[1]?.(false) })
-    await waitFor(() => { expect(document.querySelector('.dwo-saving')).not.toBeNull() })
+    await waitFor(() => { expect(document.querySelector('.dwo-save-failed')).not.toBeNull() })
+    expect(document.querySelector('.dwo-saving')).toBeNull()
+    // The retry control says why the Host refused the document, not just that
+    // it did: a bare "not saved" cannot be acted on.
+    const label = document.querySelector('.dwo-save-failed')
+      ?.closest('[data-tooltip]')?.getAttribute('data-tooltip') ?? ''
+    expect(label).toContain('HTTP 500')
+    expect(label).toContain('invalid group document')
+  })
+})
+
+describe('GroupedBrowser rail', () => {
+  it('renders the two rail controls instead of the tree', async () => {
+    const props = propsFor(
+      [workspaceView('repo', ['named'])],
+      [sessionRow('named')],
+      fakeServices(),
+      new Map(),
+      [],
+      'ready',
+      false,
+    )
+    render(<GroupedBrowser {...props} />)
+    await waitFor(() => { expect(document.querySelector('.dwo-browse.rail')).not.toBeNull() })
+    expect(screen.queryByRole('tree')).toBeNull()
+    expect(screen.queryByText('repo')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: messages.addWorkspace }))
+    await userEvent.click(screen.getByRole('button', { name: messages.search }))
+    expect(props.expandSidebar).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('GroupedBrowser loading', () => {
+  it('does not offer a new group before the document arrives', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => undefined)))
+    render(<GroupedBrowser {...propsFor([], [], fakeServices())} />)
+    await screen.findByText(messages.loading)
+    await userEvent.click(document.querySelector('.dwo-head-actions .dwo-icon-btn') as HTMLElement)
+    const item = await screen.findByText(messages.newGroup)
+    expect((item.closest('button') as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('GroupedBrowser labels', () => {
+  it('shows Untitled for a session with no stored title and the default workspace name', async () => {
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const auto = sessionRow('auto', { title: undefined })
+    const workspace = workspaceView('default-workspace', ['auto', 'blank-current'])
+    render(<GroupedBrowser {...propsFor([workspace], [current, auto], fakeServices())} />)
+    expect(await screen.findByText(messages.defaultWorkspace)).toBeDefined()
+    expect(await screen.findByText(messages.untitled)).toBeDefined()
+  })
+
+  it('renders the copy of the language the locale seat selects', async () => {
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const repo = workspaceView('repo', ['blank-current'])
+    const props = propsFor([repo], [current], fakeServices())
+    render(<GroupedBrowser {...props} t={translate('zh')} />)
+    expect(await screen.findByText('工作区')).toBeDefined()
+    expect(await screen.findByText('新会话')).toBeDefined()
+  })
+})
+
+describe('GroupedBrowser stop-and-archive consent', () => {
+  it('warns about running sessions and only stops the ones it counted', async () => {
+    const services = fakeServices()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    services.archiveSession = vi.fn((sessionId: string, options?: { stopActivity?: boolean }) => {
+      if (options?.stopActivity === true) return Promise.resolve()
+      // `run` was running when the dialog opened and may be stopped; `idle`
+      // started running while it was up, so this refusal must not stop it.
+      return Promise.reject(archiveRefusal(sessionId))
+    })
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const run = sessionRow('run')
+    const idle = sessionRow('idle')
+    const repo = workspaceView('repo', ['run', 'idle', 'blank-current'])
+    const statuses: SessionStatusSnapshot = new Map([
+      [id('run'), { running: true, pendingInteraction: undefined, completionUnread: false }],
+      [id('idle'), { running: false, pendingInteraction: undefined, completionUnread: false }],
+    ])
+    render(<GroupedBrowser {...propsFor([repo], [current, run, idle], services, statuses)} />)
+    await screen.findByText('Work')
+    const groupRow = document.querySelector('[data-row-key="group:g1"]') as Element
+    await userEvent.click(rowButtons(groupRow)[0] as HTMLElement)
+    const menu = await screen.findByRole('menu', { hidden: true })
+    await userEvent.click(within(menu).getByText(messages.archiveGroup))
+    const dialog = await screen.findByRole('dialog', { hidden: true })
+    expect(within(dialog).getByText(
+      `${messages.archiveGroupBody(2)} ${messages.archiveGroupRunning(1)}`,
+    )).toBeDefined()
+    await userEvent.click(within(dialog).getByText(messages.ok))
+    await waitFor(() => {
+      expect(services.archiveSession).toHaveBeenCalledWith('run', { stopActivity: true })
+    })
+    expect(services.archiveSession).not.toHaveBeenCalledWith('idle', { stopActivity: true })
+    expect(warn).toHaveBeenCalledWith('workspace-organize: archive refused', 'idle', expect.any(Error))
+  })
+})
+
+describe('GroupedBrowser save retry', () => {
+  it('re-sends the newest document from the header control', async () => {
+    const { settles } = heldWrites()
+    mountBrowser()
+    await screen.findByText('Work')
+    await createGroup('First')
+    await act(async () => { settles[0]?.(false) })
+    const retry = await screen.findByRole('button', { name: messages.retrySave })
+    await userEvent.click(retry)
+    await waitFor(() => { expect(settles).toHaveLength(2) })
+    await act(async () => { settles[1]?.(true) })
+    await waitFor(() => { expect(document.querySelector('.dwo-save-failed')).toBeNull() })
+  })
+})
+
+describe('GroupedBrowser archived-only listing', () => {
+  it('drops a workspace with no archived row', async () => {
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const named = sessionRow('named')
+    const gone = sessionRow('gone')
+    const repo = workspaceView('repo', ['named', 'gone', 'blank-current'])
+    const other = workspaceView('other', ['named'])
+    render(<GroupedBrowser {...propsFor([repo, other], [current, named, gone], fakeServices(), new Map(), ['gone'])} />)
+    await chooseViewOption(messages.onlyArchived)
+    expect(await screen.findByText('repo')).toBeDefined()
+    expect(screen.queryByText('other')).toBeNull()
   })
 })

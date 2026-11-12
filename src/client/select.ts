@@ -91,17 +91,22 @@ export function sessionShown(
 /**
  * Put surviving rows in the browser's render order.
  *
- * One rule serves every listing: the retained placeholder leads, archived rows
- * trail the live ones — where the shipped manual order keeps them — and each
- * partition keeps the caller's order. Because it holds for search results too,
- * a match from the archive never outranks a live one.
+ * One rule serves every listing: the retained **blank placeholder** leads,
+ * archived rows trail the live ones — where the shipped manual order keeps them
+ * — and each partition keeps the caller's order. Because it holds for search
+ * results too, a match from the archive never outranks a live one.
+ *
+ * Only a blank placeholder is hoisted: the main view also retains an opened
+ * ordinary Session, and the shipped `sectionMembers` leaves it in place.
  * @param ids - ids that survived the visibility rule, in caller order.
+ * @param list - sessions list snapshot, for the placeholder flag.
  * @param main - the retained session id.
  * @param archived - registry-global archive set.
  * @returns the same ids, placeholder first, archived last.
  */
 function partitionRows(
   ids: readonly SessionId[],
+  list: SessionListState,
   main: SessionId | undefined,
   archived: ReadonlySet<SessionId>,
 ): SessionId[] {
@@ -109,7 +114,7 @@ function partitionRows(
   const live: SessionId[] = []
   const spent: SessionId[] = []
   for (const id of ids) {
-    if (id === main) leading.push(id)
+    if (id === main && list.byId[id]?.blank === true) leading.push(id)
     else if (archived.has(id)) spent.push(id)
     else live.push(id)
   }
@@ -130,15 +135,35 @@ export interface SessionSelection {
   query: string
   /** Archived-row visibility choice; omitted hides them. */
   archivedFilter?: ArchivedFilter
+  /**
+   * Copy a Session with no durable title displays, so search matches what the
+   * row shows; omitted falls back to English `Untitled`.
+   */
+  untitled?: string
+}
+
+/**
+ * The title a Session row shows for search purposes.
+ *
+ * The durable title, or the localized Untitled label the row prints when none
+ * is stored — never `displayTitle`, which falls back to a directory basename
+ * the row does not render. A blank placeholder has no conversational title and
+ * never matches.
+ * @param row - the Session's list row.
+ * @param untitled - localized label for a Session with no stored title.
+ * @returns the lower-cased searchable title, or `''` for a blank placeholder.
+ */
+function searchableTitle(row: SessionSummary, untitled: string): string {
+  return row.blank ? '' : (row.title || untitled)
 }
 
 /**
  * The sessions one Workspace shows, in render order.
  *
- * A blank placeholder never matches a query: its canonical title is the
- * directory name, so matching it would tie search to one language. The
- * surviving placeholder leads its Workspace, matching the order
- * `sectionMembers` gives placeholders in the shipped tree.
+ * A blank placeholder never matches a query: it is the New Session placeholder,
+ * not a conversation, and its label is UI copy. The surviving placeholder leads
+ * its Workspace, matching the order `sectionMembers` gives placeholders in the
+ * shipped tree.
  *
  * Two partitions apply to whatever the filter and query leave: the placeholder
  * leads, and archived rows trail the live ones — where the shipped manual order
@@ -147,17 +172,25 @@ export interface SessionSelection {
  * @returns visible session ids, placeholder first, archived last.
  */
 export function visibleSessionIds(selection: SessionSelection): SessionId[] {
-  const { list, workspace, main, archived, query, archivedFilter = 'default' } = selection
+  const {
+    list,
+    workspace,
+    main,
+    archived,
+    query,
+    archivedFilter = 'default',
+    untitled = 'Untitled',
+  } = selection
   const shown = workspace.sessionIds
     .filter(id => sessionShown(list.byId[id], id, main, archived, archivedFilter))
   const matched = query === ''
     ? shown
     : shown.filter((id) => {
         const row = list.byId[id]
-        if (row === undefined || row.blank) return false
-        return row.displayTitle.toLowerCase().includes(query)
+        if (row === undefined) return false
+        return searchableTitle(row, untitled).toLowerCase().includes(query)
       })
-  return partitionRows(matched, main, archived)
+  return partitionRows(matched, list, main, archived)
 }
 
 /**
@@ -181,6 +214,7 @@ export function visibleSessionIds(selection: SessionSelection): SessionId[] {
  * @param archived - registry-global archive set.
  * @param query - trimmed, lower-cased search query; empty lists everything.
  * @param archivedFilter - archived-row visibility choice; omitted hides them.
+ * @param untitled - localized label for a Session with no stored title.
  * @returns visible unowned session ids, placeholder first, archived last.
  */
 export function unownedSessionIds(
@@ -190,6 +224,7 @@ export function unownedSessionIds(
   archived: ReadonlySet<SessionId>,
   query: string,
   archivedFilter: ArchivedFilter = 'default',
+  untitled = 'Untitled',
 ): SessionId[] {
   const accounted = new Set<SessionId>()
   for (const workspace of workspaces) {
@@ -201,9 +236,9 @@ export function unownedSessionIds(
       if (query === '') return true
       const row = list.byId[id]
       // A blank placeholder never matches a query, for the same reason the
-      // Workspace listing excludes it: its title is a directory name.
-      if (row === undefined || row.blank) return false
-      return row.displayTitle.toLowerCase().includes(query)
+      // Workspace listing excludes it: it is the New Session placeholder.
+      if (row === undefined) return false
+      return searchableTitle(row, untitled).toLowerCase().includes(query)
     })
     .toSorted((left, right) => {
       const at = list.byId[left]?.updatedAt ?? 0
@@ -211,7 +246,7 @@ export function unownedSessionIds(
       if (at !== other) return other - at
       return left < right ? -1 : left > right ? 1 : 0
     })
-  return partitionRows(shown, main, archived)
+  return partitionRows(shown, list, main, archived)
 }
 
 /**
@@ -239,30 +274,62 @@ const PENDING_COPY: Readonly<Record<string, 'statusApproval' | 'statusPlanReview
 }
 
 /**
+ * Running subagents of one Session.
+ *
+ * The catalog's `subagentCatalog` is the Host projection a parent row already
+ * carries; a child's own status may not have arrived yet, so the Session
+ * summary's running flag is the fallback — the same pair the shipped
+ * `runningChildCount` reads.
+ * @param list - sessions list snapshot.
+ * @param parentId - the Session whose children are counted.
+ * @param statuses - unified UI status snapshot.
+ * @returns how many children are running.
+ */
+export function runningSubagentCount(
+  list: SessionListState,
+  parentId: SessionId,
+  statuses: SessionStatusSnapshot,
+): number {
+  const catalog = list.projectionsBySession[parentId]?.values.subagentCatalog
+  if (catalog === undefined) return 0
+  let running = 0
+  for (const child of catalog) {
+    const state = statuses.get(child.id)?.running ?? list.byId[child.id]?.running
+    if (state === true) running += 1
+  }
+  return running
+}
+
+/**
  * One row's status.
  *
- * A pending interaction outranks running, which outranks a finished-but-unread
- * completion — the same precedence the shipped status dots use. A pending kind
- * this plugin has no copy for keeps the warning dot and leaves the timestamp in
- * place rather than printing a raw kind.
+ * A pending interaction outranks running, which outranks running subagents,
+ * which outrank a finished-but-unread completion — the same precedence the
+ * shipped status dots use. A pending kind this plugin has no copy for keeps the
+ * warning dot and leaves the timestamp in place rather than printing a raw kind.
  * @param statuses - unified UI status snapshot.
  * @param id - the session to read.
  * @param messages - copy for the pending label.
+ * @param runningFallback - the Session summary's running flag, used while the
+ * unified status has no entry for the row.
+ * @param runningSubagents - how many of the Session's children are running.
  * @returns the dot state and optional trailing label.
  */
 export function rowStatus(
   statuses: SessionStatusSnapshot,
   id: SessionId,
   messages: Messages,
+  runningFallback = false,
+  runningSubagents = 0,
 ): RowStatus {
   const status = statuses.get(id)
-  if (status === undefined) return { state: 'idle' }
-  if (status.pendingInteraction !== undefined) {
+  if (status?.pendingInteraction !== undefined) {
     const key = PENDING_COPY[status.pendingInteraction.kind]
     return key === undefined ? { state: 'warning' } : { state: 'warning', trailing: messages[key] }
   }
-  if (status.running === true) return { state: 'ongoing' }
-  if (status.completionUnread) return { state: 'done' }
+  if ((status?.running ?? runningFallback) === true) return { state: 'ongoing' }
+  if (runningSubagents > 0) return { state: 'ongoing' }
+  if (status?.completionUnread === true) return { state: 'done' }
   return { state: 'idle' }
 }
 
@@ -278,14 +345,20 @@ export interface GroupRollUp {
  * Roll member Workspaces up into one group status.
  *
  * A group holds no sessions of its own, so its dot and count come from the
- * members. Archived rows are already out of the way and never counted.
+ * members. Archived rows are already out of the way and never counted, and a
+ * subagent child is skipped: its parent already counts it through
+ * {@link runningSubagentCount}. A row counts as running through the unified
+ * status first, the summary's running flag next, and its running subagents last
+ * — the same fallbacks a row uses.
  * @param members - the group's live member Workspaces.
+ * @param list - sessions list snapshot, for summary fallbacks.
  * @param statuses - unified UI status snapshot.
  * @param archived - registry-global archive set.
  * @returns running and pending session counts.
  */
 export function groupRollUp(
   members: readonly WorkspaceView[],
+  list: SessionListState,
   statuses: SessionStatusSnapshot,
   archived: ReadonlySet<SessionId>,
 ): GroupRollUp {
@@ -294,10 +367,19 @@ export function groupRollUp(
   for (const member of members) {
     for (const id of member.sessionIds) {
       if (archived.has(id)) continue
+      // A spawned child is represented through its parent's running count;
+      // counting the child's own row as well would report the pair twice.
+      if (list.byId[id]?.origin === 'subagent') continue
       const status = statuses.get(id)
-      if (status === undefined) continue
-      if (status.pendingInteraction !== undefined) pending += 1
-      else if (status.running === true) running += 1
+      if (status?.pendingInteraction !== undefined) {
+        pending += 1
+        continue
+      }
+      if ((status?.running ?? list.byId[id]?.running) === true) {
+        running += 1
+        continue
+      }
+      if (runningSubagentCount(list, id, statuses) > 0) running += 1
     }
   }
   return { running, pending }

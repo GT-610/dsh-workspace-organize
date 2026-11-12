@@ -9,7 +9,7 @@
  * so a component test still proves the plugin's own wiring. The real artwork,
  * menu surface and modal are exercised by the shell itself.
  */
-import type { ReactNode } from 'react'
+import type { AriaRole, ReactNode } from 'react'
 
 /** Shared props of every icon component. */
 interface IconProps {
@@ -51,6 +51,7 @@ function icon(name: string) {
 }
 
 export const IconArchiveOutlineRegular = icon('archive')
+export const IconCloseFillRegular = icon('close-fill')
 export const IconChevronsUpDownOutlineRegular = icon('chevrons-up-down')
 export const IconEditOutlineRegular = icon('edit')
 export const IconEllipsisOutlineRegular = icon('ellipsis')
@@ -58,11 +59,35 @@ export const IconFolderCloseRegular = icon('folder-close')
 export const IconFolderOpenOutlineRegular = icon('folder-open-outline')
 export const IconFolderOpenRegular = icon('folder-open')
 export const IconProjectAddOutlineRegular = icon('project-add')
+export const IconNewChatOutlineRegular = icon('new-chat')
 export const IconSearchOutlineRegular = icon('search')
 export const IconSlidersTwoOutlineRegular = icon('sliders-two')
 export const IconTrashOutlineRegular = icon('trash')
 export const IconTriangleRightFillRegular = icon('triangle-right')
 export const IconUnarchiveOutlineRegular = icon('unarchive')
+
+/**
+ * Animated rows double: renders the keyed container the real component emits
+ * (minus the exit overlay and Web Animations), and publishes the keys so a test
+ * can check they match the rendered `data-row-key` attributes.
+ */
+export function AnimatedRows({ children, className, role, label, rowKeys, ready, resetKey }: {
+  children: ReactNode
+  className: string
+  role?: AriaRole
+  label?: string
+  rowKeys: readonly string[]
+  ready: boolean
+  resetKey: string
+}) {
+  void ready
+  void resetKey
+  return (
+    <div className={className} role={role} aria-label={label} data-row-keys={rowKeys.join('|')}>
+      {children}
+    </div>
+  )
+}
 
 /** State dot double exposing the state it was asked to paint. */
 export function StateDot({ state, size }: { state: string; size?: number | undefined; className?: string | undefined }) {
@@ -121,6 +146,7 @@ export function Menu({ open, anchor, items = [], selectedId, onSelect, onClose }
                   type="button"
                   role="menuitem"
                   aria-current={selectedId === item.id ? 'true' : undefined}
+                  disabled={item.disabled}
                   onClick={() => onSelect?.(item.id)}
                 >
                   {item.icon}

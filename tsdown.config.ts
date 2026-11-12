@@ -59,7 +59,13 @@ export default defineConfig([
     format: 'cjs',
     platform: 'browser',
     target: 'es2022',
-    deps: { neverBundle: PLATFORM_MODULES },
+    deps: {
+      neverBundle: PLATFORM_MODULES,
+      // `workspaceDisplayTitle` is a documented pure fold that client bundles
+      // are meant to inline, so the "dependency detected in bundle" hint is
+      // noise here.
+      onlyBundle: false,
+    },
     dts: false,
     clean: false,
     sourcemap: true,

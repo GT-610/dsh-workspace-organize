@@ -16,16 +16,18 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/clie
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 // Load the slot-map and standard-hook augmentations the browser composes from.
+import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import { GroupedBrowser } from './Browser.tsx'
+import { EN_DICT, LOCALE_NS, ZH_DICT } from './i18n.ts'
 import type { OrganizeBrowserInjected, OrganizeBrowserProps, Services } from './contract.ts'
 
-/** Required services. `slots` is the render ledger this entry registers into. */
-export const inject = ['slots']
+/** Required services: the render ledger and the locale registry. */
+export const inject = ['slots', 'locale']
 
 /**
  * Loud-failure guard. A render crash in this entry makes the slot abdicate and
@@ -139,6 +141,12 @@ function createServices(ctx: Context): Services {
  * @param ctx - client root context.
  */
 export function apply(ctx: Context): void {
+  // Registering through `ctx.effect` ties the dictionaries to this plugin's
+  // fiber, so unloading the plugin removes them with the browser entry.
+  ctx.effect(
+    () => ctx.locale.register(LOCALE_NS, { en: EN_DICT, zh: ZH_DICT }),
+    'workspace-organize: dictionaries',
+  )
   const services = createServices(ctx)
   // `slots.inject` waits for the sidebar to declare the hole: the declaration
   // belongs to ui-sidebar's apply, whose activation order is not guaranteed.
@@ -148,6 +156,9 @@ export function apply(ctx: Context): void {
       // Shadow the shipped entry (default priority 0) and leave room between
       // the two for another plugin to slot in.
       priority: -100,
+      // Puts the framework `t` seat on the component props; the copy follows
+      // the language selected in DSH and switches without a reload.
+      locale: LOCALE_NS,
       inject: (): OrganizeBrowserInjected => ({ services }),
     },
     function OrganizeBrowserEntry(props: OrganizeBrowserProps) {
