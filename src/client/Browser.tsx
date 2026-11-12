@@ -9,14 +9,17 @@
  * file owns interaction state only.
  */
 import {
+  AnimatedRows,
   Button,
   IconArchiveOutlineRegular,
   IconChevronsUpDownOutlineRegular,
+  IconCloseFillRegular,
   IconEditOutlineRegular,
   IconEllipsisOutlineRegular,
   IconFolderCloseRegular,
   IconFolderOpenOutlineRegular,
   IconFolderOpenRegular,
+  IconNewChatOutlineRegular,
   IconProjectAddOutlineRegular,
   IconSearchOutlineRegular,
   IconSlidersTwoOutlineRegular,
@@ -221,6 +224,8 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
    * the newest edit rather than whichever request won the race — and because the
    * answers then arrive in edit order, the last one is the state to show.
    */
+  /** The search field focuses when the header magnifier opens it. */
+  const searchInput = useRef<HTMLInputElement | null>(null)
   const writeTail = useRef<Promise<boolean>>(Promise.resolve(true))
   /** Newest document, kept for the retry control after a refused save. */
   const lastDocument = useRef<WorkspaceGroup[] | undefined>(undefined)
@@ -245,6 +250,12 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     })
     return () => { live = false }
   }, [])
+
+  // The field stays mounted so its width/opacity can transition; focus follows
+  // the open state instead of `autoFocus` (which only fires at mount).
+  useEffect(() => {
+    if (searchOpen) searchInput.current?.focus({ preventScroll: true })
+  }, [searchOpen])
 
   // Row timestamps bucket against a slowly advancing clock, not per render.
   useEffect(() => {
@@ -508,6 +519,22 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   /** The visible rows of one Workspace, already derived for this render. */
   const visibleOf = (workspaceId: string): SessionId[] => visibleByWorkspace.get(workspaceId) ?? []
 
+  /** Every live member of one group, before the archived-only filter. */
+  const groupMembers = (group: WorkspaceGroup) =>
+    group.workspaceIds.map(id => workspaceById.get(id)).filter(member => member !== undefined)
+
+  /** The members the current view lists: the archive filter drops empty ones. */
+  const shownGroupMembers = (group: WorkspaceGroup) => {
+    const all = groupMembers(group)
+    return archivedFilter === 'only'
+      ? all.filter(member => visibleOf(member.workspaceId).length > 0)
+      : all
+  }
+
+  /** Whether a workspace row is expanded in the current view. */
+  const workspaceOpen = (workspace: (typeof workspaces)[number]): boolean =>
+    isExpanded(`ws:${workspace.workspaceId}`, workspace.workspaceId === activeWorkspaceId)
+
   /** The sessions a group-level operation may act on, already derived. */
   const contentOf = (workspaceId: string): SessionId[] => contentByWorkspace.get(workspaceId) ?? []
 
@@ -699,7 +726,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     const label = workspaceLabel(workspace)
     // Workspaces start collapsed — only the one holding the current session
     // opens, which is the shipped browser's own resting shape.
-    const isOpen = isExpanded(key, workspace.workspaceId === activeWorkspaceId)
+    const isOpen = workspaceOpen(workspace)
     const others = destinationsByWorkspace.get(workspace.workspaceId) ?? []
     // Only a grouped Workspace can leave a group. Offering the entry on an
     // ungrouped row would name an operation that cannot change anything: the
@@ -788,7 +815,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
                   services.startSession(workspace.workspaceId)
                 }}
               >
-                <IconProjectAddOutlineRegular size={16} />
+                <IconNewChatOutlineRegular size={14} />
               </button>
             </Tooltip>
           </span>
@@ -813,16 +840,12 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     // Groups hold no sessions of their own, so they rest open: the noise a wall
     // of identical session rows caused came from workspaces, not here.
     const isOpen = isExpanded(key, true)
-    const allMembers = group.workspaceIds
-      .map(id => workspaceById.get(id))
-      .filter(member => member !== undefined)
+    const allMembers = groupMembers(group)
     // The archived-only view drops Workspaces with no archived row, as the
     // shipped browser does. Membership and the group operations still read the
     // unfiltered list: the filter changes what is shown, never what a group
     // holds.
-    const members = archivedFilter === 'only'
-      ? allMembers.filter(member => visibleOf(member.workspaceId).length > 0)
-      : allMembers
+    const members = shownGroupMembers(group)
     // The count and the confirmation use the same derivation as the operation
     // itself, so the number promised is the number archived.
     const content = allMembers.flatMap(member => contentOf(member.workspaceId))
@@ -1135,46 +1158,88 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     )
   }
 
+  // Keys of every row the tree renders, in DOM order. `AnimatedRows` matches
+  // them to the rows' `data-row-key`, so membership animations and the tree
+  // cannot disagree about which rows are on screen.
+  const rowKeys: string[] = []
+  for (const group of listedGroups) {
+    rowKeys.push(`group:${group.id}`)
+    if (!isExpanded(`g:${group.id}`, true)) continue
+    for (const member of shownGroupMembers(group)) {
+      rowKeys.push(`workspace:${member.workspaceId}`)
+      if (!workspaceOpen(member)) continue
+      for (const id of visibleOf(member.workspaceId)) rowKeys.push(`session:${id}`)
+    }
+  }
+  for (const workspace of listedUngrouped) {
+    rowKeys.push(`workspace:${workspace.workspaceId}`)
+    if (!workspaceOpen(workspace)) continue
+    for (const id of visibleOf(workspace.workspaceId)) rowKeys.push(`session:${id}`)
+  }
+  if (unowned.length > 0) {
+    rowKeys.push('unowned')
+    if (isExpanded(UNOWNED_KEY, true)) for (const id of unowned) rowKeys.push(`session:${id}`)
+  }
+  // View changes replace the list rather than animating across it.
+  const animationResetKey = `${archivedFilter}/${normalizedQuery}`
+
   return (
     <div className="dwo-browse">
       <style>{STYLES}</style>
       <div className="dwo-header">
         <span className={`dwo-head-label${searchOpen ? ' hidden' : ''}`}>{messages.organizeTitle}</span>
         <div className={`dwo-search-slot${searchOpen ? ' open' : ''}`}>
-          <div className={`dwo-search${searchOpen ? ' open' : ''}`}>
-            <Tooltip
-              label={searchOpen ? messages.closeSearch : messages.search}
-              side="bottom"
-              align="end"
-              delayMs={500}
-              portal
-            >
+          <div
+            className={`dwo-search${searchOpen ? ' open' : ''}`}
+            onClick={() => {
+              setSearchOpen(true)
+              searchInput.current?.focus({ preventScroll: true })
+            }}
+          >
+            <Tooltip label={messages.search} side="bottom" align="end" delayMs={500} portal>
               <button
                 type="button"
                 className="dwo-icon-btn dwo-search-btn"
-                aria-label={searchOpen ? messages.closeSearch : messages.search}
-                onClick={() => {
-                  setSearchOpen(value => !value)
-                  if (searchOpen) setQuery('')
+                aria-label={messages.search}
+                aria-expanded={searchOpen}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setSearchOpen(true)
+                  searchInput.current?.focus({ preventScroll: true })
                 }}
               >
-                <IconSearchOutlineRegular size={16} />
+                <IconSearchOutlineRegular size={searchOpen ? 11 : 14} />
               </button>
             </Tooltip>
+            <input
+              ref={searchInput}
+              className="dwo-search-input"
+              tabIndex={searchOpen ? 0 : -1}
+              placeholder={messages.search}
+              value={query}
+              onChange={event => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  setSearchOpen(false)
+                  setQuery('')
+                }
+              }}
+            />
             {searchOpen && (
-              <input
-                className="dwo-search-input"
-                autoFocus
-                placeholder={messages.search}
-                value={query}
-                onChange={event => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape') {
+              <Tooltip label={messages.closeSearch} side="bottom" align="end" delayMs={500} portal>
+                <button
+                  type="button"
+                  className="dwo-search-clear"
+                  aria-label={messages.closeSearch}
+                  onClick={(event) => {
+                    event.stopPropagation()
                     setSearchOpen(false)
                     setQuery('')
-                  }
-                }}
-              />
+                  }}
+                >
+                  <IconCloseFillRegular size={12} />
+                </button>
+              </Tooltip>
             )}
           </div>
         </div>
@@ -1221,41 +1286,61 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         ? <div className="dwo-empty">{messages.loading}</div>
         : archivedFilter === 'only' && !hasVisibleContent
           ? (
-              <div className="dwo-list" role="tree" aria-label={messages.organizeTitle}>
-                <div className="dwo-empty">
-                  {/* An empty archive and a query that misses are different
-                      facts, and the row below has to name the right one. */}
-                  {hasArchived ? messages.noMatches : messages.archivedOnlyEmpty}
-                  {!hasArchived && (
-                    <>
-                      {' '}
-                      {/* The way back is the shipped browser's "view other
-                          sessions": an ordinary view. With an empty archive
-                          `default` and `show` render the same rows, so there is
-                          nothing for `show` to add. */}
-                      <button
-                        type="button"
-                        className="dwo-empty-link"
-                        onClick={() => chooseArchivedFilter('default')}
-                      >
-                        {messages.viewOtherSessions}
-                      </button>
-                    </>
-                  )}
-                </div>
+              <div className="dwo-tree-body">
+                <AnimatedRows
+                  className="dwo-list"
+                  role="tree"
+                  label={messages.organizeTitle}
+                  rowKeys={[]}
+                  ready={sessionReady}
+                  resetKey={animationResetKey}
+                >
+                  <div className="dwo-empty">
+                    {/* An empty archive and a query that misses are different
+                        facts, and the row below has to name the right one. */}
+                    {hasArchived ? messages.noMatches : messages.archivedOnlyEmpty}
+                    {!hasArchived && (
+                      <>
+                        {' '}
+                        {/* The way back is the shipped browser's "view other
+                            sessions": an ordinary view. With an empty archive
+                            `default` and `show` render the same rows, so there
+                            is nothing for `show` to add. */}
+                        <button
+                          type="button"
+                          className="dwo-empty-link"
+                          onClick={() => chooseArchivedFilter('default')}
+                        >
+                          {messages.viewOtherSessions}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </AnimatedRows>
+                <span className="dwo-fade" aria-hidden="true" />
               </div>
             )
           : (
-              <div className="dwo-list" role="tree" aria-label={messages.organizeTitle}>
-                {listedGroups.map(group => groupNode(group, 0))}
-                {listedGroups.length > 0 && listedUngrouped.length > 0 && (
-                  <div className="dwo-sep">{messages.ungroupedWorkspaces}</div>
-                )}
-                {listedUngrouped.map(workspace => workspaceRow(workspace, 0))}
-                {unownedNode(unowned)}
-                {listedGroups.length === 0 && listedUngrouped.length === 0 && unowned.length === 0 && (
-                  <div className="dwo-empty">{messages.noWorkspaces}</div>
-                )}
+              <div className="dwo-tree-body">
+                <AnimatedRows
+                  className="dwo-list"
+                  role="tree"
+                  label={messages.organizeTitle}
+                  rowKeys={rowKeys}
+                  ready={sessionReady}
+                  resetKey={animationResetKey}
+                >
+                  {listedGroups.map(group => groupNode(group, 0))}
+                  {listedGroups.length > 0 && listedUngrouped.length > 0 && (
+                    <div className="dwo-sep">{messages.ungroupedWorkspaces}</div>
+                  )}
+                  {listedUngrouped.map(workspace => workspaceRow(workspace, 0))}
+                  {unownedNode(unowned)}
+                  {listedGroups.length === 0 && listedUngrouped.length === 0 && unowned.length === 0 && (
+                    <div className="dwo-empty">{messages.noWorkspaces}</div>
+                  )}
+                </AnimatedRows>
+                <span className="dwo-fade" aria-hidden="true" />
               </div>
             )}
       {menu !== undefined && (

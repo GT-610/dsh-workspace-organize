@@ -38,6 +38,9 @@ _Nothing yet._
 
 ### Fixed
 
+- The workspace row's New Session button uses the shipped
+  `IconNewChatOutlineRegular` glyph; 0.2.2 replaced the project-add glyph the
+  tree had copied from the older release.
 - An opened ordinary Session no longer jumps to the first row of its Workspace.
   Only the retained blank placeholder leads; the main view also retains a
   Session that is already a conversation.
@@ -129,6 +132,11 @@ _Nothing yet._
 
 ### Changed
 
+- The chrome follows the 0.2.2 stylesheet: the sidebar's own row padding, label
+  gap and paint-inset variables, 24px action targets, the 28/32px search field,
+  section-label and header-action transitions, the wide fade-in, and
+  `AnimatedRows` movement/entry/exit for row membership. `prefers-reduced-motion`
+  disables the sheet's transitions and the row animation.
 - Requires `0.2.2-rc.1` or newer; the development dependencies, the README and
   `engines.dsh` name the same baseline. The package declares
   `dsh.manifestVersion: 1`.

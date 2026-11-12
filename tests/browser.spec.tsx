@@ -372,6 +372,38 @@ function rowButtons(row: Element): HTMLElement[] {
   return within(row as HTMLElement).getAllByRole('button', { hidden: true })
 }
 
+describe('GroupedBrowser shipped chrome', () => {
+  it('uses the shipped New Session glyph on a workspace row', async () => {
+    mountBrowser()
+    await screen.findByText('repo')
+    const row = document.querySelector('[data-row-key="workspace:repo"]') as Element
+    expect(rowButtons(row)[1]?.querySelector('[data-icon="new-chat"]')).not.toBeNull()
+  })
+
+  it('publishes row keys that match the rendered rows', async () => {
+    mountBrowser()
+    await screen.findByText('Work')
+    const list = document.querySelector('[data-row-keys]') as HTMLElement
+    expect(list).not.toBeNull()
+    const declared = list.getAttribute('data-row-keys')?.split('|') ?? []
+    const rendered = Array.from(list.querySelectorAll('[data-row-key]'))
+      .map(element => element.getAttribute('data-row-key'))
+    expect(declared).toEqual(rendered)
+  })
+
+  it('keeps the search field mounted and expands it through the header', async () => {
+    mountBrowser()
+    await screen.findByText('Work')
+    expect(document.querySelector('.dwo-search-input')).not.toBeNull()
+    expect(document.querySelector('.dwo-search.open')).toBeNull()
+    await userEvent.click(document.querySelector('.dwo-search-btn') as HTMLElement)
+    expect(document.querySelector('.dwo-search.open')).not.toBeNull()
+    expect(document.querySelector('.dwo-search-clear')).not.toBeNull()
+    await userEvent.click(document.querySelector('.dwo-search-clear') as HTMLElement)
+    expect(document.querySelector('.dwo-search.open')).toBeNull()
+  })
+})
+
 describe('GroupedBrowser menus', () => {
   it('opens the workspace menu and moves the workspace out of its group', async () => {
     const { services } = mountBrowser()
