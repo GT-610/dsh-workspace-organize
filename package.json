@@ -1,6 +1,6 @@
 {
   "name": "dsh-workspace-organize",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Group DSH workspaces into named groups and browse group > workspace > session in the sidebar.",
   "keywords": [
     "dsh",
