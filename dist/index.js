@@ -1,6 +1,6 @@
+import { join, resolve } from "node:path";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
 //#region src/shared/contract.ts
 /**
 * The group document: the only state this plugin owns.
@@ -77,23 +77,97 @@ function normalizeGroupDocument(raw) {
 	};
 }
 //#endregion
-//#region src/index.ts
+//#region src/host/request.ts
 /**
-* Host half of dsh-workspace-organize.
+* Whether a write request comes from the same origin as the page that serves
+* this route.
 *
-* Registers one local route, {@link GROUP_ROUTE}, that persists the group
-* document the Client half edits. Groups are a plugin-private virtual layer:
-* the official Workspace registry (records, sessions, archive and pin sets) is
-* never touched here — only this document is stored.
-*
-* Storage: `$DSH_HOME/storages/workspace-organize-groups.json` (the same
-* directory the workspace domain itself uses), written atomically through a
-* temporary file and a rename on a serialized write chain. Write requests are
-* fenced to same-origin browser callers (`Sec-Fetch-Site`/`Origin` checks);
-* reads are unauthenticated, so the Host must stay bound to a loopback address.
+* Browsers always attach `Sec-Fetch-Site` (modern) or `Origin`; a cross-site
+* browser write therefore carries one and is refused unless it names this Host.
+* A request carrying neither is not a browser form/JSON POST, and the desktop
+* shell uses exactly that shape: its authenticated reverse proxy strips both
+* headers before forwarding `/api/*` to this server. Refusing them made every
+* save from the desktop app a 403 while reads (which have no fence) kept working.
+* Either way the boundary is the Host's bind address, not this function: a Host
+* serving a LAN address accepts header-less writes from that network too.
+* @param req - incoming request.
+* @returns whether the write may proceed.
 */
-/** Activation waits for the web carrier so the route registers on first boot. */
-const inject = ["webServer"];
+function sameOriginWrite(req) {
+	const site = req.headers["sec-fetch-site"];
+	if (typeof site === "string") return site === "same-origin" || site === "none";
+	const origin = req.headers.origin;
+	if (typeof origin === "string") try {
+		return new URL(origin).host === req.headers.host;
+	} catch {
+		return false;
+	}
+	return true;
+}
+/**
+* A body past {@link MAX_DOCUMENT_BYTES}, as distinct from a stream failure.
+*
+* The route has to tell the two apart: only a cap refusal is a `413` on a
+* connection it must close itself, while a broken stream is not a fact about the
+* body's size and belongs to the ordinary 500 path, where it is logged.
+*/
+var BodyTooLargeError = class extends Error {
+	name = "BodyTooLargeError";
+};
+/**
+* Whether one body-read failure is the size cap rather than a stream failure.
+* @param error - what `readBody` rejected with.
+* @returns whether the body exceeded the cap.
+*/
+function isBodyTooLarge(error) {
+	return error instanceof BodyTooLargeError;
+}
+/**
+* Read one request body with the byte cap.
+*
+* An oversize body stops the read and leaves the request paused rather than
+* destroyed: the route answers `413` on that same socket and closes it once the
+* answer is out, which it could not do on a connection this function had already
+* torn down.
+* @param req - incoming request.
+* @returns the decoded body.
+* @throws {BodyTooLargeError} when the body exceeds {@link MAX_DOCUMENT_BYTES};
+* the caller owns the connection from then on.
+* @throws the stream's own error when reading the body fails.
+*/
+function readBody(req) {
+	return new Promise((resolve, reject) => {
+		const chunks = [];
+		let size = 0;
+		let refused = false;
+		req.on("data", (chunk) => {
+			if (refused) return;
+			size += chunk.length;
+			if (size > 2097152) {
+				refused = true;
+				req.pause();
+				reject(new BodyTooLargeError("body too large"));
+				return;
+			}
+			chunks.push(chunk);
+		});
+		req.on("end", () => {
+			if (!refused) resolve(Buffer.concat(chunks).toString("utf8"));
+		});
+		req.on("error", (error) => {
+			if (!refused) reject(error);
+		});
+	});
+}
+//#endregion
+//#region src/host/storage.ts
+/**
+* Where the group document lives, and how one copy of it is read and written.
+*
+* The file sits in `$DSH_HOME/storages`, the directory the workspace domain
+* itself uses, and every write commits through a temporary file and a rename so
+* a half-written document can never be the one a reload reads back.
+*/
 /**
 * Expand the one tilde prefix the harness accepts in a configured path.
 * @param path - configured path, possibly starting with `~`, `~/`, or `~\`.
@@ -145,78 +219,24 @@ async function readStoredDocument(file) {
 	return doc;
 }
 /**
-* Whether a write request comes from the same origin as the page that serves
-* this route.
+* Commit one document through a temporary file and a rename.
 *
-* Browsers always attach `Sec-Fetch-Site` (modern) or `Origin`; a cross-site
-* browser write therefore carries one and is refused unless it names this Host.
-* A request carrying neither is not a browser form/JSON POST, and the desktop
-* shell uses exactly that shape: its authenticated reverse proxy strips both
-* headers before forwarding `/api/*` to this server. Refusing them made every
-* save from the desktop app a 403 while reads (which have no fence) kept working.
-* Either way the boundary is the Host's bind address, not this function: a Host
-* serving a LAN address accepts header-less writes from that network too.
-* @param req - incoming request.
-* @returns whether the write may proceed.
+* The rename is the commit point: a reader either sees the previous document or
+* this one, never a partial write.
+* @param dir - directory the document belongs in; created when absent.
+* @param file - absolute path of the stored document.
+* @param doc - the document to store.
 */
-function sameOriginWrite(req) {
-	const site = req.headers["sec-fetch-site"];
-	if (typeof site === "string") return site === "same-origin" || site === "none";
-	const origin = req.headers.origin;
-	if (typeof origin === "string") try {
-		return new URL(origin).host === req.headers.host;
-	} catch {
-		return false;
-	}
-	return true;
+async function writeStoredDocument(dir, file, doc) {
+	await mkdir(dir, { recursive: true });
+	const tmp = `${file}.${String(process.pid)}.tmp`;
+	await writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
+	await rename(tmp, file);
 }
-/**
-* A body past {@link MAX_DOCUMENT_BYTES}, as distinct from a stream failure.
-*
-* The route has to tell the two apart: only a cap refusal is a `413` on a
-* connection it must close itself, while a broken stream is not a fact about the
-* body's size and belongs to the ordinary 500 path, where it is logged.
-*/
-var BodyTooLargeError = class extends Error {
-	name = "BodyTooLargeError";
-};
-/**
-* Read one request body with the byte cap.
-*
-* An oversize body stops the read and leaves the request paused rather than
-* destroyed: the route answers `413` on that same socket and closes it once the
-* answer is out, which it could not do on a connection this function had already
-* torn down.
-* @param req - incoming request.
-* @returns the decoded body.
-* @throws {BodyTooLargeError} when the body exceeds {@link MAX_DOCUMENT_BYTES};
-* the caller owns the connection from then on.
-* @throws the stream's own error when reading the body fails.
-*/
-function readBody(req) {
-	return new Promise((resolve, reject) => {
-		const chunks = [];
-		let size = 0;
-		let refused = false;
-		req.on("data", (chunk) => {
-			if (refused) return;
-			size += chunk.length;
-			if (size > 2097152) {
-				refused = true;
-				req.pause();
-				reject(new BodyTooLargeError("body too large"));
-				return;
-			}
-			chunks.push(chunk);
-		});
-		req.on("end", () => {
-			if (!refused) resolve(Buffer.concat(chunks).toString("utf8"));
-		});
-		req.on("error", (error) => {
-			if (!refused) reject(error);
-		});
-	});
-}
+//#endregion
+//#region src/index.ts
+/** Activation waits for the web carrier so the route registers on first boot. */
+const inject = ["webServer"];
 /**
 * Plugin apply: register the route and return its disposer.
 * @param ctx - Host Cordis context.
@@ -239,12 +259,7 @@ function apply(ctx) {
 	};
 	let tail = Promise.resolve();
 	const enqueueWrite = (doc) => {
-		const run = tail.then(async () => {
-			await mkdir(dir, { recursive: true });
-			const tmp = `${file}.${process.pid}.tmp`;
-			await writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
-			await rename(tmp, file);
-		});
+		const run = tail.then(() => writeStoredDocument(dir, file, doc));
 		tail = run.catch(() => void 0);
 		return run;
 	};
@@ -276,7 +291,7 @@ function apply(ctx) {
 			try {
 				body = await readBody(req);
 			} catch (error) {
-				if (!(error instanceof BodyTooLargeError)) throw error;
+				if (!isBodyTooLarge(error)) throw error;
 				res.setHeader("connection", "close");
 				res.once("finish", () => req.destroy());
 				reply(413, { error: "body too large" });
@@ -309,6 +324,6 @@ function apply(ctx) {
 	});
 }
 //#endregion
-export { apply, inject, readBody, readStoredDocument, resolveDshHome, sameOriginWrite };
+export { apply, inject };
 
 //# sourceMappingURL=index.js.map

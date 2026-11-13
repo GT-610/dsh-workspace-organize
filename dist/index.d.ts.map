@@ -1,1 +1,1 @@
-{"version":3,"file":"index.d.ts","names":[],"sources":["../src/shared/contract.ts","../src/index.ts"],"mappings":";;;;UA4DiB;;EAEf;;EAEA;;EAEA;;;UAIe;;EAEf;;EAEA,QAAQ;;;;;cCzCG;;;;;;;;;;;;;;iBA0BG,eAAe,MAAK,SAAS;;;;;;;;;;;;iBAoBvB,mBAAmB,eAAe,QAAQ;;;;;;;;;;;;;;;;iBA4BhD,gBAAgB,KAAK;;;;;;;;;;;;;;iBAsCrB,SAAS,KAAK,kBAAkB;;;;;;iBAiChC,MAAM,KAAK"}
+{"version":3,"file":"index.d.ts","names":[],"sources":["../src/index.ts"],"mappings":";;;cAkCa;;;;;;iBAOG,MAAM,KAAK"}
