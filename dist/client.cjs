@@ -709,7 +709,8 @@ function groupRollUp(members, list, statuses, archived) {
 * cannot load outside the shell's own module table, so importing it would drag
 * the whole component library into every derivation. Only the boundaries can
 * drift — the bucket vocabulary itself is the primitives' own
-* ({@link TimeBucket} is `RelativeTimeUnit`), and `select.spec.ts` samples them.
+* ({@link TimeBucket} is `RelativeTimeUnit`), and `select.spec.ts` pins every
+* boundary through {@link timeLabel}.
 * @param at - epoch ms of the dated moment.
 * @param now - current epoch ms.
 * @returns the bucket plus its magnitude (0 for "now"). A moment ahead of `now`

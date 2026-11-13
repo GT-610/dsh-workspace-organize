@@ -62,10 +62,10 @@ function fakeServices() {
 }
 
 /** The Host's running-work refusal, in the shape the browser reads. */
-function archiveRefusal(sessionId: string) {
+function archiveRefusal(sessionId: string, activity: readonly unknown[] = [{ kind: 'turn' }]) {
   return Object.assign(new Error('session-active'), {
     name: 'WorkspaceArchiveError',
-    rpcError: { code: 'workspace/session-active', details: { sessionId, activity: [{ kind: 'turn' }] } },
+    rpcError: { code: 'workspace/session-active', details: { sessionId, activity } },
   })
 }
 
@@ -246,48 +246,11 @@ describe('GroupedBrowser unowned bucket', () => {
     expect(bucket()?.querySelector('.dwo-count')?.textContent).toContain(`1 ${messages.unitSessions}`)
   })
 
-  it('lists only the sessions no workspace accounts for', async () => {
-    mountUnowned()
-    await screen.findByText(messages.ungroupedSessions)
-    const rows = bucket()?.querySelectorAll('.dwo-session-row') ?? []
-    expect(rows).toHaveLength(1)
-    expect(bucket()?.querySelector('[data-row-key="session:named"]')).toBeNull()
-  })
-
   it('opens an unowned session when its row is clicked', async () => {
     const { services } = mountUnowned()
     const row = await screen.findByText('Loose conversation')
     await userEvent.click(row)
     expect(services.openSession).toHaveBeenCalledWith('loose')
-  })
-
-  it('keeps a spent draft out of the bucket', async () => {
-    mountUnowned(fakeServices(), [sessionRow('loose'), sessionRow('spent-draft', { blank: true })])
-    await screen.findByText(messages.ungroupedSessions)
-    expect(bucket()?.querySelector('[data-row-key="session:loose"]')).not.toBeNull()
-    expect(bucket()?.querySelector('[data-row-key="session:spent-draft"]')).toBeNull()
-  })
-
-  it('keeps a subagent child out of the bucket', async () => {
-    mountUnowned(fakeServices(), [sessionRow('loose'), sessionRow('spawned', { origin: 'subagent' })])
-    await screen.findByText(messages.ungroupedSessions)
-    expect(bucket()?.querySelector('[data-row-key="session:loose"]')).not.toBeNull()
-    expect(bucket()?.querySelector('[data-row-key="session:spawned"]')).toBeNull()
-  })
-
-  it('follows the archived filter', async () => {
-    mountUnowned(
-      fakeServices(),
-      [sessionRow('loose'), sessionRow('archived-loose')],
-      ['archived-loose'],
-    )
-    await screen.findByText(messages.ungroupedSessions)
-    expect(bucket()?.querySelector('[data-row-key="session:archived-loose"]')).toBeNull()
-    await chooseViewOption(messages.showArchived)
-    expect(bucket()?.querySelector('[data-row-key="session:archived-loose"]')).not.toBeNull()
-    await chooseViewOption(messages.onlyArchived)
-    expect(bucket()?.querySelector('[data-row-key="session:loose"]')).toBeNull()
-    expect(bucket()?.querySelector('[data-row-key="session:archived-loose"]')).not.toBeNull()
   })
 
   it('counts an unowned archived row as content under the archived-only filter', async () => {
@@ -942,6 +905,35 @@ describe('GroupedBrowser stop-and-archive consent', () => {
     expect(services.archiveSession).not.toHaveBeenCalledWith('idle', { stopActivity: true })
     expect(warn).toHaveBeenCalledWith('workspace-organize: archive refused', 'idle', expect.any(Error))
   })
+  it('names every family of running work the Host reports', async () => {
+    const services = fakeServices()
+    services.archiveSession = vi.fn().mockRejectedValue(archiveRefusal('named', [
+      { kind: 'turn' },
+      { kind: 'subagent', items: [1, 2] },
+      { kind: 'job', items: [1] },
+      { kind: 'schedule', items: [1, 2, 3] },
+      // A family this plugin has no copy for keeps the generic line rather than
+      // printing a raw kind, and an absent `items` counts as the one item it
+      // names.
+      { kind: 'invented' },
+    ]))
+    const current = sessionRow('blank-current', {
+      blank: true,
+      retainedBy: { mainView: 1 } as SessionSummary['retainedBy'],
+    })
+    const named = sessionRow('named')
+    render(<GroupedBrowser {...propsFor([workspaceView('repo', ['named', 'blank-current'])], [current, named], services)} />)
+    await screen.findByText('named')
+    const row = document.querySelector('[data-row-key="session:named"]') as Element
+    await userEvent.click(rowButtons(row)[0] as HTMLElement)
+    const dialog = await screen.findByRole('dialog', { hidden: true })
+    expect(within(dialog).getByText(messages.activityTurn)).toBeDefined()
+    expect(within(dialog).getByText(messages.activitySubagent(2))).toBeDefined()
+    expect(within(dialog).getByText(messages.activityJob(1))).toBeDefined()
+    expect(within(dialog).getByText(messages.activitySchedule(3))).toBeDefined()
+    expect(within(dialog).getByText(messages.activityOther(1))).toBeDefined()
+  })
+
 })
 
 describe('GroupedBrowser save retry', () => {

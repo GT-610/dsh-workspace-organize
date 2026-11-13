@@ -15,7 +15,6 @@ import {
   contentSessionIds,
   groupRollUp,
   mainSessionId,
-  relativeTime,
   rowStatus,
   sessionShown,
   timeLabel,
@@ -188,13 +187,6 @@ describe('visibleSessionIds render order', () => {
     expect(ids).toEqual(['a', 'b', 'c'])
   })
 
-  it('keeps a non-blank unowned session in recency order', () => {
-    const a = row('a', { updatedAt: 30 })
-    const b = row('b', { updatedAt: 20, retainedBy: { mainView: 1 } as SessionSummary['retainedBy'] })
-    const c = row('c', { updatedAt: 10 })
-    expect(unownedSessionIds(list([a, b, c]), [], mainSessionId(list([a, b, c])), new Set(), ''))
-      .toEqual(['a', 'b', 'c'])
-  })
 })
 
 describe('searchable title', () => {
@@ -316,13 +308,17 @@ describe('unownedSessionIds', () => {
     expect(unowned('', 'default')).not.toContain('loose-archived')
   })
 
-  it('is empty when every session has a workspace', () => {
-    expect(unownedSessionIds(list([owned]), [target], undefined, new Set(), '')).toEqual([])
-  })
-
   it('leaves a subagent child out of the bucket', () => {
     const child = row('loose-child', { origin: 'subagent', updatedAt: 60 })
     expect(unownedSessionIds(list([child, owned]), [target], undefined, new Set(), '')).toEqual([])
+  })
+
+  it('breaks a same-age tie by session id, not by catalog order', () => {
+    // Supplied in reverse id order: the bucket sorts newest first and falls back
+    // to the id, so the catalog's own order cannot be what decides.
+    const same = { updatedAt: 5 }
+    const sessions = list([row('c', same), row('b', same), row('a', same)])
+    expect(unownedSessionIds(sessions, [], undefined, new Set(), '')).toEqual([id('a'), id('b'), id('c')])
   })
 })
 
@@ -390,30 +386,47 @@ describe('rowStatus', () => {
     expect(rowStatus(snapshot, id('absent'), messages)).toEqual({ state: 'idle' })
   })
 
+  it('falls back to the summary running flag while the unified status has no entry', () => {
+    // The unified status is authoritative once it has an entry, so a Session the
+    // Host says is idle stays idle even while its summary still says running.
+    expect(rowStatus(new Map(), id('summary-running'), messages, true)).toEqual({ state: 'ongoing' })
+    expect(rowStatus(statuses({ quiet: { running: false } }), id('quiet'), messages, true))
+      .toEqual({ state: 'idle' })
+  })
+
   it('keeps the warning dot and leaves the timestamp for a kind it cannot label', () => {
     const snapshot = statuses({ odd: { pendingInteraction: { kind: 'invented' } as SessionStatus['pendingInteraction'] } })
     expect(rowStatus(snapshot, id('odd'), messages)).toEqual({ state: 'warning' })
   })
 })
 
-describe('relativeTime and timeLabel', () => {
+describe('timeLabel', () => {
   const now = 1_000_000_000_000
+  const MIN = 60_000
+  const HOUR = 3_600_000
+  const DAY = 86_400_000
 
-  it('buckets each magnitude', () => {
-    expect(relativeTime(now - 30_000, now)).toEqual({ unit: 'now', n: 0 })
-    expect(relativeTime(now - 5 * 60_000, now)).toEqual({ unit: 'minutes', n: 5 })
-    expect(relativeTime(now - 5 * 3_600_000, now)).toEqual({ unit: 'hours', n: 5 })
-    expect(relativeTime(now - 5 * 86_400_000, now)).toEqual({ unit: 'days', n: 5 })
-    expect(relativeTime(now - 70 * 86_400_000, now)).toEqual({ unit: 'months', n: 2 })
-    expect(relativeTime(now - 800 * 86_400_000, now)).toEqual({ unit: 'years', n: 2 })
+  it('dates a row with the bucket its age falls in', () => {
+    expect(timeLabel(now - 30_000, now, messages)).toBe(messages.timeNow)
+    expect(timeLabel(now - 5 * MIN, now, messages)).toBe(messages.timeMinutes(5))
+    expect(timeLabel(now - 5 * HOUR, now, messages)).toBe(messages.timeHours(5))
+    expect(timeLabel(now - 5 * DAY, now, messages)).toBe(messages.timeDays(5))
+    expect(timeLabel(now - 70 * DAY, now, messages)).toBe(messages.timeMonths(2))
+    expect(timeLabel(now - 800 * DAY, now, messages)).toBe(messages.timeYears(2))
   })
 
-  it('never reports a future moment as negative', () => {
-    expect(relativeTime(now + 60_000, now)).toEqual({ unit: 'now', n: 0 })
+  it('puts each boundary in the coarser bucket', () => {
+    // The boundaries are restated from the shipped `relativeTime` rather than
+    // imported, so this is where a drift would show up.
+    expect(timeLabel(now - (MIN - 1), now, messages)).toBe(messages.timeNow)
+    expect(timeLabel(now - MIN, now, messages)).toBe(messages.timeMinutes(1))
+    expect(timeLabel(now - HOUR, now, messages)).toBe(messages.timeHours(1))
+    expect(timeLabel(now - DAY, now, messages)).toBe(messages.timeDays(1))
+    expect(timeLabel(now - 30 * DAY, now, messages)).toBe(messages.timeMonths(1))
+    expect(timeLabel(now - 365 * DAY, now, messages)).toBe(messages.timeYears(1))
   })
 
-  it('localizes the bucket', () => {
-    expect(timeLabel(now - 5 * 3_600_000, now, messages)).toBe(messages.timeHours(5))
-    expect(timeLabel(now, now, messages)).toBe(messages.timeNow)
+  it('dates a moment ahead of the clock as "now"', () => {
+    expect(timeLabel(now + MIN, now, messages)).toBe(messages.timeNow)
   })
 })

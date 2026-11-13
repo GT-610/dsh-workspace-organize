@@ -395,14 +395,15 @@ export function groupRollUp(
  * cannot load outside the shell's own module table, so importing it would drag
  * the whole component library into every derivation. Only the boundaries can
  * drift — the bucket vocabulary itself is the primitives' own
- * ({@link TimeBucket} is `RelativeTimeUnit`), and `select.spec.ts` samples them.
+ * ({@link TimeBucket} is `RelativeTimeUnit`), and `select.spec.ts` pins every
+ * boundary through {@link timeLabel}.
  * @param at - epoch ms of the dated moment.
  * @param now - current epoch ms.
  * @returns the bucket plus its magnitude (0 for "now"). A moment ahead of `now`
  * reads as "now": the first comparison takes any diff below a minute, a negative
  * one included.
  */
-export function relativeTime(at: number, now: number): { unit: TimeBucket; n: number } {
+function relativeTime(at: number, now: number): { unit: TimeBucket; n: number } {
   const MIN = 60_000
   const HOUR = 3_600_000
   const DAY = 86_400_000
