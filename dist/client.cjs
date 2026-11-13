@@ -103,9 +103,11 @@ const LOCALE_NS = "workspaceOrganize";
 /**
 * Every string this plugin renders, as the locale service stores it.
 *
-* Both dictionaries must carry exactly these keys: the typed registration
-* rejects a missing or extra key at compile time, and the service rejects a
-* missing language at runtime.
+* This dictionary is the vocabulary's source of truth: {@link Messages} and
+* {@link messagesFrom} are derived from its keys and its templates, and
+* {@link ZH_DICT} is checked against those keys at compile time. The reverse is
+* not checked — this dictionary is what the check is against — so a language
+* added later must match it.
 */
 const EN_DICT = {
 	organizeTitle: "Workspaces",
@@ -265,87 +267,19 @@ const ZH_DICT = {
 *
 * Called on each render rather than memoized: the bound function keeps a stable
 * identity across an active-locale switch, so a `useMemo` on it would keep the
-* previous language.
+* previous language. The split between a plain string and a function follows the
+* rule {@link Messages} states: a template that interpolates becomes a function,
+* because substituting here would freeze one argument into every later call.
 * @param t - the namespace-bound translate seat the slot injects.
 * @returns the string face the derivations and components consume.
 */
 function messagesFrom(t) {
-	return {
-		organizeTitle: t("organizeTitle"),
-		addWorkspace: t("addWorkspace"),
-		viewOptions: t("viewOptions"),
-		expandAll: t("expandAll"),
-		collapseAll: t("collapseAll"),
-		savePending: t("savePending"),
-		saveFailed: t("saveFailed"),
-		retrySave: t("retrySave"),
-		search: t("search"),
-		closeSearch: t("closeSearch"),
-		newGroup: t("newGroup"),
-		ungroupedWorkspaces: t("ungroupedWorkspaces"),
-		ungroupedSessions: t("ungroupedSessions"),
-		loading: t("loading"),
-		noWorkspaces: t("noWorkspaces"),
-		noSessions: t("noSessions"),
-		noMatches: t("noMatches"),
-		emptyGroup: t("emptyGroup"),
-		hideArchived: t("hideArchived"),
-		showArchived: t("showArchived"),
-		onlyArchived: t("onlyArchived"),
-		archivedOnlyEmpty: t("archivedOnlyEmpty"),
-		viewOtherSessions: t("viewOtherSessions"),
-		archivedNotOpenable: t("archivedNotOpenable"),
-		newSession: t("newSession"),
-		blankSession: t("blankSession"),
-		untitled: t("untitled"),
-		defaultWorkspace: t("defaultWorkspace"),
-		workspaceMenu: t("workspaceMenu"),
-		groupMenu: t("groupMenu"),
-		renameWorkspace: t("renameWorkspace"),
-		deleteWorkspace: t("deleteWorkspace"),
-		renameSession: t("renameSession"),
-		archiveSession: t("archiveSession"),
-		unarchive: t("unarchive"),
-		renameGroup: t("renameGroup"),
-		archiveGroup: t("archiveGroup"),
-		deleteGroupWorkspaces: t("deleteGroupWorkspaces"),
-		removeFromGroup: t("removeFromGroup"),
-		moveToGroup: t("moveToGroup"),
-		ungroup: t("ungroup"),
-		unitWorkspaces: t("unitWorkspaces"),
-		unitSessions: t("unitSessions"),
-		unitRunning: t("unitRunning"),
-		unitPending: t("unitPending"),
-		statusApproval: t("statusApproval"),
-		statusPlanReview: t("statusPlanReview"),
-		statusQuestion: t("statusQuestion"),
-		cancel: t("cancel"),
-		ok: t("ok"),
-		working: t("working"),
-		close: t("close"),
-		nameGroup: t("nameGroup"),
-		nameWorkspace: t("nameWorkspace"),
-		nameSession: t("nameSession"),
-		archiveGroupBody: (count) => t("archiveGroupBody", { count }),
-		archiveGroupRunning: (count) => t("archiveGroupRunning", { count }),
-		deleteGroupWorkspacesBody: (count) => t("deleteGroupWorkspacesBody", { count }),
-		deleteWorkspaceBody: t("deleteWorkspaceBody"),
-		archiveConfirmTitle: t("archiveConfirmTitle"),
-		archiveConfirmBody: (title) => t("archiveConfirmBody", { title }),
-		archiveConfirmAction: t("archiveConfirmAction"),
-		activityLabel: t("activityLabel"),
-		activityTurn: t("activityTurn"),
-		activitySubagent: (count) => t("activitySubagent", { count }),
-		activityJob: (count) => t("activityJob", { count }),
-		activitySchedule: (count) => t("activitySchedule", { count }),
-		activityOther: (count) => t("activityOther", { count }),
-		timeNow: t("timeNow"),
-		timeMinutes: (count) => t("timeMinutes", { count }),
-		timeHours: (count) => t("timeHours", { count }),
-		timeDays: (count) => t("timeDays", { count }),
-		timeMonths: (count) => t("timeMonths", { count }),
-		timeYears: (count) => t("timeYears", { count })
-	};
+	const out = {};
+	for (const key of Object.keys(EN_DICT)) out[key] = EN_DICT[key].includes("{") ? (argument) => t(key, {
+		count: argument,
+		title: argument
+	}) : t(key);
+	return out;
 }
 //#endregion
 //#region src/client/contract.ts
