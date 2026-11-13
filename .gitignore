@@ -3,3 +3,6 @@ coverage/
 *.log
 *.tsbuildinfo
 .DS_Store
+
+# DSH workspace data (agent memory), not part of the plugin
+.dsh/

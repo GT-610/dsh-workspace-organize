@@ -14,7 +14,8 @@ import { join, resolve as resolvePath } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { IncomingMessage } from 'node:http'
 import { MAX_DOCUMENT_BYTES, emptyGroupDocument } from '../src/shared/contract.ts'
-import { readBody, readStoredDocument, resolveDshHome, sameOriginWrite } from '../src/index.ts'
+import { readBody, sameOriginWrite } from '../src/host/request.ts'
+import { readStoredDocument, resolveDshHome } from '../src/host/storage.ts'
 
 /** A minimal request carrying only headers. */
 function request(headers: Record<string, string>): IncomingMessage {

@@ -9,9 +9,9 @@
 ## 特性
 
 - **三级浏览。** 分组 → 工作区 → 会话。行高、字号与图标都和官方侧栏一致，折叠行为也一样；主题与菜单外观跟随外壳。
-- **分组独立存放。** 分组文档存放在 `$DSH_HOME/storages/`，与官方工作区注册表分离；除非主动操作，插件不改动工作区或会话。
-- **行规则与官方一致。** 插件只显示主视图当前持有的那一个空白会话，标签为「新会话」；子代理会话挂在父会话表头下；没有工作区归属的会话收进「未分组」，仍然可以打开。
-- **归档与恢复。** 归档后该行移出列表，行尾按钮变为「从归档恢复」；视图菜单可切换隐藏、全部、只看已归档三档，选择会被记住。
+- **分组独立存放。** 分组成独立文档，与官方工作区注册表分离；除非主动操作，插件不改动工作区或会话。
+- **行规则与官方一致。** 插件只显示主视图当前持有的那一个空白会话，标签为「新会话」；子代理会话不单独占行，只在父会话的状态里计入运行数；没有工作区归属的会话收进「未分组的会话」，仍然可以打开。
+- **归档与恢复。** 默认视图下归档后该行移出列表，行尾按钮变为「从归档恢复」；视图菜单可切换隐藏、全部、只看已归档三档，选择会被记住，归档行在这两档下仍然看得见。
 - **运行中保护。** 会话还有进行中的回合、子代理、后台任务或定时提醒时，先列出并确认，再停止归档。组级确认只处理当时计数到的会话或工作区。
 - **组级批量。** 可一次归档组内全部会话或删除组内全部工作区。归档计数只包含实际会归档的会话，已归档、占位和子代理会话不计入；删除计数只包含工作区。
 - **右键菜单。** 其他插件已接管的行不再弹菜单，避免两个菜单叠加。
@@ -55,7 +55,7 @@ ln -s "$PWD" ~/.dsh/profiles/<profile>/node_modules/dsh-workspace-organize
 New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.dsh\profiles\<profile>\node_modules\dsh-workspace-organize" -Target (Get-Location)
 ```
 
-之后运行 `pnpm dev`（`tsdown --watch`），改完源码刷新页面。
+之后运行 `pnpm dev`（`tsdown --watch`）。客户端改动刷新页面即可；Host 半边（`src/index.ts`、`src/host/`）改动需要重启 DSH。
 
 ## 使用
 
@@ -75,9 +75,9 @@ New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.dsh\profiles\<profile>\
 
 ## 数据与隐私
 
-- 分组文档只有两份：Host 上的 `$DSH_HOME/storages/workspace-organize-groups.json` 和浏览器 localStorage 镜像；Host 不可达时先写镜像，恢复后以 Host 为准。
+- 分组文档只有两份：Host 上的 `$DSH_HOME/storages/workspace-organize-groups.json` 和浏览器 localStorage 镜像。每次保存都先写镜像，加载时以 Host 为准——被 Host 拒掉的编辑要点重试，刷新后会丢。
 - 归档与置顶状态归官方所有，插件只调用官方的归档/恢复操作。
-- 写入使用临时文件加 `rename`，串行提交；读接口只监听回环地址，写接口校验 `Sec-Fetch-Site` / `Origin`，两个头都没有的请求按非浏览器调用放行。
+- 写入使用临时文件加 `rename`，串行提交；写接口校验 `Sec-Fetch-Site` / `Origin`，两个头都没有的请求按非浏览器调用放行。读接口不做鉴权，所以 Host 应绑在回环地址上。
 - 文档上限为 200 个分组、每组 500 个工作区、全文档 2000 条成员；非法文档整份拒绝，未知字段丢弃，重复成员去重。请求体超过 2 MiB 返回 `413`，JSON 解析或文档校验失败返回 `400`。
 
 ## 工作原理
@@ -96,24 +96,30 @@ sidebar.workspaces 槽位
 ## 开发
 
 ```text
-src/index.ts              Host：路由、同源校验、原子存储
+src/index.ts              Host 入口：只注册路由
+src/host/                 写栅栏、请求体读取、文档存储
 src/shared/contract.ts    两侧共用的类型与校验器
 src/client/               槽位注册、树与菜单、派生、传输、i18n、样式
-tests/                    单元测试与 jsdom 组件测试
+tests/                    单元、路由与 jsdom 组件测试
 ```
 
 ```sh
-pnpm typecheck   # 对官方发布的类型检查
-pnpm lint        # oxlint
-pnpm test        # vitest
-pnpm build       # tsdown → dist/
-pnpm check       # 以上四项
+pnpm typecheck    # 对官方发布的类型检查
+pnpm lint         # oxlint
+pnpm test         # vitest
+pnpm build        # tsdown → dist/
+pnpm check:bundle # 客户端产物只能请求外壳的基线模块
+pnpm check:locale # 插件卡片的标题与描述
+pnpm check        # 以上全部
 ```
 
 - `dist/` 提交进仓库，DSH 安装后直接加载；CI 会重建并比对，防止与源码脱节。
 - 类型来自官方包，槽位契约漂移会先被 `pnpm typecheck` 拦住。
 - 客户端产物是闭包工厂；CSS 全局注入，类名带 `dwo-`；文案走 Client locale 服务。
 - 组件测试用 `tests/stubs/primitives.tsx` 替代官方 primitives，因为其 ESM 入口不声明实际运行时依赖。
+- `locale/en.json`、`locale/zh.json` 只是插件卡片的标题与描述；界面文案全部在 `src/client/i18n.ts`。
+- `assets/icon-180.png` 是商店列表用的 180px 栅格图，不进 npm 包（包图标是 `icon.svg`）。
+- 与外壳打交道的坑——遮蔽槽位、右键仲裁、空白会话、Host 与客户端的重载差异——记在 [`docs/development.md`](docs/development.md)。
 
 ## 兼容性
 

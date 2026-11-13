@@ -10,165 +10,29 @@
  * directory the workspace domain itself uses), written atomically through a
  * temporary file and a rename on a serialized write chain. Write requests are
  * fenced to same-origin browser callers (`Sec-Fetch-Site`/`Origin` checks);
- * reads are open because the server itself is loopback-trusted.
+ * reads are unauthenticated, so the Host must stay bound to a loopback address.
+ *
+ * This module is the entry point and nothing else: the request helpers live in
+ * `./host/request.ts` and the document store in `./host/storage.ts`, so the only
+ * names the package exports are the two the Cordis loader needs.
  */
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { homedir } from 'node:os'
-// `resolve` is aliased: the Promise executors below bind their own `resolve`.
-import { join, resolve as resolvePath } from 'node:path'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Loads the `ctx.webServer` augmentation, without which the service is `any`
 // and every route shape below would go unchecked.
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import { isBodyTooLarge, readBody, sameOriginWrite } from './host/request.ts'
+import { readStoredDocument, resolveDshHome, writeStoredDocument } from './host/storage.ts'
 import {
   GROUP_ROUTE,
   GROUP_STORAGE_FILE,
-  MAX_DOCUMENT_BYTES,
-  emptyGroupDocument,
   normalizeGroupDocument,
   type GroupDocument,
 } from './shared/contract.ts'
 
 /** Activation waits for the web carrier so the route registers on first boot. */
 export const inject = ['webServer']
-
-/**
- * Expand the one tilde prefix the harness accepts in a configured path.
- * @param path - configured path, possibly starting with `~`, `~/`, or `~\`.
- * @returns the expanded path, or the input unchanged when it has no prefix.
- */
-function expandHomePath(path: string): string {
-  if (path === '~') return homedir()
-  if (path.startsWith('~/') || path.startsWith('~\\')) return join(homedir(), path.slice(2))
-  return path
-}
-
-/**
- * Resolve the DeepSeek Harness home exactly as the rest of the Host does
- * (`@deepseek-ai/dsh-home-paths`' `resolveDshHome`).
- *
- * Reading `DSH_HOME` raw would diverge in three ways that matter here: a blank
- * override would resolve this plugin's storage to a `storages` directory under
- * the process cwd instead of `~/.dsh`, a `~/…` override would be taken
- * literally and create a directory named `~`, and a relative one would keep
- * depending on the cwd. The document would then land outside the tree every
- * other DSH component reads, and look lost.
- * @param env - environment to read; defaults to the process environment.
- * @returns the absolute harness home.
- */
-export function resolveDshHome(env: Readonly<Record<string, string | undefined>> = process.env): string {
-  const configured = env.DSH_HOME
-  return resolvePath(
-    configured !== undefined && configured.trim().length > 0
-      ? expandHomePath(configured)
-      : join(homedir(), '.dsh'),
-  )
-}
-
-/**
- * Read and validate one stored group document.
- *
- * A missing file is a fresh install and reads as an empty document. Any other
- * failure — an unreadable file, malformed JSON, or a shape the validator
- * rejects — is thrown: answering "empty" there would let the Client discard its
- * localStorage mirror and show an installation with no groups.
- * @param file - absolute path of the stored document.
- * @returns the normalized document.
- * @throws when the file exists but cannot be read or validated.
- */
-export async function readStoredDocument(file: string): Promise<GroupDocument> {
-  let text: string
-  try {
-    text = await readFile(file, 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptyGroupDocument()
-    throw error
-  }
-  const doc = normalizeGroupDocument(JSON.parse(text))
-  if (doc === null) throw new Error('stored group document is invalid')
-  return doc
-}
-
-/**
- * Whether a write request comes from the same origin as the page that serves
- * this route.
- *
- * Browsers always attach `Sec-Fetch-Site` (modern) or `Origin`; a cross-site
- * browser write therefore carries one and is refused unless it names this Host.
- * A request carrying neither is not a browser form/JSON POST, and the desktop
- * shell uses exactly that shape: its authenticated reverse proxy strips both
- * headers before forwarding `/api/*` to this server. Refusing them made every
- * save from the desktop app a 403 while reads (which have no fence) kept working.
- * The loopback server remains the boundary for local code either way.
- * @param req - incoming request.
- * @returns whether the write may proceed.
- */
-export function sameOriginWrite(req: IncomingMessage): boolean {
-  const site = req.headers['sec-fetch-site']
-  if (typeof site === 'string') return site === 'same-origin' || site === 'none'
-  const origin = req.headers.origin
-  if (typeof origin === 'string') {
-    try {
-      return new URL(origin).host === req.headers.host
-    } catch {
-      return false
-    }
-  }
-  return true
-}
-
-/**
- * A body past {@link MAX_DOCUMENT_BYTES}, as distinct from a stream failure.
- *
- * The route has to tell the two apart: only a cap refusal is a `413` on a
- * connection it must close itself, while a broken stream is not a fact about the
- * body's size and belongs to the ordinary 500 path, where it is logged.
- */
-class BodyTooLargeError extends Error {
-  override readonly name = 'BodyTooLargeError'
-}
-
-/**
- * Read one request body with the byte cap.
- *
- * An oversize body stops the read and leaves the request paused rather than
- * destroyed: the route answers `413` on that same socket and closes it once the
- * answer is out, which it could not do on a connection this function had already
- * torn down.
- * @param req - incoming request.
- * @returns the decoded body.
- * @throws {BodyTooLargeError} when the body exceeds {@link MAX_DOCUMENT_BYTES};
- * the caller owns the connection from then on.
- * @throws the stream's own error when reading the body fails.
- */
-export function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    let size = 0
-    // `pause` takes effect after the chunks already in flight, so `data` can still
-    // fire for a body that has been refused; without this flag those would keep
-    // growing `chunks`.
-    let refused = false
-    req.on('data', (chunk: Buffer) => {
-      if (refused) return
-      size += chunk.length
-      if (size > MAX_DOCUMENT_BYTES) {
-        refused = true
-        req.pause()
-        reject(new BodyTooLargeError('body too large'))
-        return
-      }
-      chunks.push(chunk)
-    })
-    req.on('end', () => {
-      if (!refused) resolve(Buffer.concat(chunks).toString('utf8'))
-    })
-    req.on('error', (error) => {
-      if (!refused) reject(error)
-    })
-  })
-}
 
 /**
  * Plugin apply: register the route and return its disposer.
@@ -195,15 +59,11 @@ export function apply(ctx: Context): (() => void) | undefined {
     return cache
   }
 
-  // Serialized write chain with an atomic tmp+rename commit.
+  // Serialized write chain: each commit starts after the previous one settles,
+  // and a failed commit must not stall the ones queued behind it.
   let tail: Promise<void> = Promise.resolve()
   const enqueueWrite = (doc: GroupDocument): Promise<void> => {
-    const run = tail.then(async () => {
-      await mkdir(dir, { recursive: true })
-      const tmp = `${file}.${process.pid}.tmp`
-      await writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, 'utf8')
-      await rename(tmp, file)
-    })
+    const run = tail.then(() => writeStoredDocument(dir, file, doc))
     tail = run.catch(() => undefined)
     return run
   }
@@ -243,7 +103,7 @@ export function apply(ctx: Context): (() => void) | undefined {
         // to the route's own 500 path. The reader left this upload paused rather
         // than closing the connection, so the 413 can still reach the caller; the
         // socket goes once that answer is out.
-        if (!(error instanceof BodyTooLargeError)) throw error
+        if (!isBodyTooLarge(error)) throw error
         res.setHeader('connection', 'close')
         res.once('finish', () => req.destroy())
         reply(413, { error: 'body too large' })

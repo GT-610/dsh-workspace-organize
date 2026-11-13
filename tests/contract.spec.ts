@@ -36,9 +36,7 @@ describe('normalizeGroupDocument', () => {
       groups: [{ id: 'g1', name: 'Work', workspaceIds: ['w1', 'w2'], colour: 'red' }],
     })
     expect(doc).toEqual({ version: 1, groups: [{ id: 'g1', name: 'Work', workspaceIds: ['w1', 'w2'] }] })
-  })
-
-  it('accepts an empty document', () => {
+    // A fresh install: an empty group list is a valid document, not an invalid one.
     expect(normalizeGroupDocument({ version: 1, groups: [] })).toEqual(emptyGroupDocument())
   })
 

@@ -23,89 +23,17 @@ function workspaceDisplayTitle(title, localizedDefault) {
 	return title === "default-workspace" ? localizedDefault : title;
 }
 //#endregion
-//#region src/shared/contract.ts
-/**
-* The group document: the only state this plugin owns.
-*
-* It is a plugin-private virtual layer over the official Workspace registry —
-* records, sessions, and the archive/pin sets are never touched. Both halves
-* import these declarations, so the wire shape and its validation cannot drift
-* between the Host route that stores it and the Client that edits it.
-*
-* Ids stay plain strings here: this is JSON on the wire and on disk, and the
-* branded runtime types belong to the packages that mint them.
-*/
-/** Absolute route the Host half registers and the Client half reads and writes. */
-const GROUP_ROUTE = "/api/workspace-organize";
-/** The document a fresh install starts from. */
-function emptyGroupDocument() {
-	return {
-		version: 1,
-		groups: []
-	};
-}
-/** A non-empty string no longer than `limit` characters. */
-function isBoundedId(value, limit) {
-	return typeof value === "string" && value.length > 0 && value.length <= limit;
-}
-/**
-* Validate and normalize one group document from the wire or from disk.
-*
-* Unknown extra fields are dropped, so a document written by a later version
-* still loads; a malformed one is rejected whole rather than partially applied.
-*
-* One normalization is worth naming: a Workspace may appear at most once in the
-* document, because a Workspace lives in one group. A repeated member is dropped
-* rather than rejected whole — the same treatment an unknown field gets — so a
-* hand-edited file with a stray duplicate still opens.
-* @param raw - parsed JSON body or file content.
-* @returns the normalized document, or `null` when the shape is invalid.
-*/
-function normalizeGroupDocument(raw) {
-	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-	const groups = raw.groups;
-	if (!Array.isArray(groups) || groups.length > 200) return null;
-	const seenIds = /* @__PURE__ */ new Set();
-	const placed = /* @__PURE__ */ new Set();
-	const out = [];
-	let total = 0;
-	for (const group of groups) {
-		if (group === null || typeof group !== "object" || Array.isArray(group)) return null;
-		const { id, name, workspaceIds } = group;
-		if (!isBoundedId(id, 128) || typeof name !== "string" || name.length > 200) return null;
-		if (seenIds.has(id)) return null;
-		seenIds.add(id);
-		if (!Array.isArray(workspaceIds) || workspaceIds.length > 500) return null;
-		const members = [];
-		for (const member of workspaceIds) {
-			if (!isBoundedId(member, 128)) return null;
-			if (placed.has(member)) continue;
-			placed.add(member);
-			members.push(member);
-		}
-		total += members.length;
-		if (total > 2e3) return null;
-		out.push({
-			id,
-			name,
-			workspaceIds: members
-		});
-	}
-	return {
-		version: 1,
-		groups: out
-	};
-}
-//#endregion
 //#region src/client/i18n.ts
 /** Namespace this plugin owns in the Client locale registry. */
 const LOCALE_NS = "workspaceOrganize";
 /**
 * Every string this plugin renders, as the locale service stores it.
 *
-* Both dictionaries must carry exactly these keys: the typed registration
-* rejects a missing or extra key at compile time, and the service rejects a
-* missing language at runtime.
+* This dictionary is the vocabulary's source of truth: {@link Messages} and
+* {@link messagesFrom} are derived from its keys and its templates, and
+* {@link ZH_DICT} is checked against those keys at compile time. The reverse is
+* not checked — this dictionary is what the check is against — so a language
+* added later must match it.
 */
 const EN_DICT = {
 	organizeTitle: "Workspaces",
@@ -265,99 +193,261 @@ const ZH_DICT = {
 *
 * Called on each render rather than memoized: the bound function keeps a stable
 * identity across an active-locale switch, so a `useMemo` on it would keep the
-* previous language.
+* previous language. The split between a plain string and a function follows the
+* rule {@link Messages} states: a template that interpolates becomes a function,
+* because substituting here would freeze one argument into every later call.
 * @param t - the namespace-bound translate seat the slot injects.
 * @returns the string face the derivations and components consume.
 */
 function messagesFrom(t) {
-	return {
-		organizeTitle: t("organizeTitle"),
-		addWorkspace: t("addWorkspace"),
-		viewOptions: t("viewOptions"),
-		expandAll: t("expandAll"),
-		collapseAll: t("collapseAll"),
-		savePending: t("savePending"),
-		saveFailed: t("saveFailed"),
-		retrySave: t("retrySave"),
-		search: t("search"),
-		closeSearch: t("closeSearch"),
-		newGroup: t("newGroup"),
-		ungroupedWorkspaces: t("ungroupedWorkspaces"),
-		ungroupedSessions: t("ungroupedSessions"),
-		loading: t("loading"),
-		noWorkspaces: t("noWorkspaces"),
-		noSessions: t("noSessions"),
-		noMatches: t("noMatches"),
-		emptyGroup: t("emptyGroup"),
-		hideArchived: t("hideArchived"),
-		showArchived: t("showArchived"),
-		onlyArchived: t("onlyArchived"),
-		archivedOnlyEmpty: t("archivedOnlyEmpty"),
-		viewOtherSessions: t("viewOtherSessions"),
-		archivedNotOpenable: t("archivedNotOpenable"),
-		newSession: t("newSession"),
-		blankSession: t("blankSession"),
-		untitled: t("untitled"),
-		defaultWorkspace: t("defaultWorkspace"),
-		workspaceMenu: t("workspaceMenu"),
-		groupMenu: t("groupMenu"),
-		renameWorkspace: t("renameWorkspace"),
-		deleteWorkspace: t("deleteWorkspace"),
-		renameSession: t("renameSession"),
-		archiveSession: t("archiveSession"),
-		unarchive: t("unarchive"),
-		renameGroup: t("renameGroup"),
-		archiveGroup: t("archiveGroup"),
-		deleteGroupWorkspaces: t("deleteGroupWorkspaces"),
-		removeFromGroup: t("removeFromGroup"),
-		moveToGroup: t("moveToGroup"),
-		ungroup: t("ungroup"),
-		unitWorkspaces: t("unitWorkspaces"),
-		unitSessions: t("unitSessions"),
-		unitRunning: t("unitRunning"),
-		unitPending: t("unitPending"),
-		statusApproval: t("statusApproval"),
-		statusPlanReview: t("statusPlanReview"),
-		statusQuestion: t("statusQuestion"),
-		cancel: t("cancel"),
-		ok: t("ok"),
-		working: t("working"),
-		close: t("close"),
-		nameGroup: t("nameGroup"),
-		nameWorkspace: t("nameWorkspace"),
-		nameSession: t("nameSession"),
-		archiveGroupBody: (count) => t("archiveGroupBody", { count }),
-		archiveGroupRunning: (count) => t("archiveGroupRunning", { count }),
-		deleteGroupWorkspacesBody: (count) => t("deleteGroupWorkspacesBody", { count }),
-		deleteWorkspaceBody: t("deleteWorkspaceBody"),
-		archiveConfirmTitle: t("archiveConfirmTitle"),
-		archiveConfirmBody: (title) => t("archiveConfirmBody", { title }),
-		archiveConfirmAction: t("archiveConfirmAction"),
-		activityLabel: t("activityLabel"),
-		activityTurn: t("activityTurn"),
-		activitySubagent: (count) => t("activitySubagent", { count }),
-		activityJob: (count) => t("activityJob", { count }),
-		activitySchedule: (count) => t("activitySchedule", { count }),
-		activityOther: (count) => t("activityOther", { count }),
-		timeNow: t("timeNow"),
-		timeMinutes: (count) => t("timeMinutes", { count }),
-		timeHours: (count) => t("timeHours", { count }),
-		timeDays: (count) => t("timeDays", { count }),
-		timeMonths: (count) => t("timeMonths", { count }),
-		timeYears: (count) => t("timeYears", { count })
-	};
+	const out = {};
+	for (const key of Object.keys(EN_DICT)) out[key] = EN_DICT[key].includes("{") ? (argument) => t(key, {
+		count: argument,
+		title: argument
+	}) : t(key);
+	return out;
 }
 //#endregion
 //#region src/client/contract.ts
 /**
 * Recover a branded Workspace id from the plain string the group document
-* stores. The document is JSON, so its ids are strings; every id in it was
-* minted by the official registry, which is what makes the narrowing sound.
+* stores. The document is JSON, so its ids are strings; the validator accepts any
+* bounded non-empty string, so this is a contract-level trust rather than a proof
+* — an id that no Workspace answers to simply fails at the service.
 * @param value - the stored id.
 * @returns the same id, branded for the official client services.
 */
 function asWorkspaceId(value) {
 	return value;
+}
+//#endregion
+//#region src/shared/contract.ts
+/**
+* The group document: the only state this plugin owns.
+*
+* It is a plugin-private virtual layer over the official Workspace registry —
+* records, sessions, and the archive/pin sets are never touched. Both halves
+* import these declarations, so the wire shape and its validation cannot drift
+* between the Host route that stores it and the Client that edits it.
+*
+* Ids stay plain strings here: this is JSON on the wire and on disk, and the
+* branded runtime types belong to the packages that mint them.
+*/
+/** Absolute route the Host half registers and the Client half reads and writes. */
+const GROUP_ROUTE = "/api/workspace-organize";
+/** The document a fresh install starts from. */
+function emptyGroupDocument() {
+	return {
+		version: 1,
+		groups: []
+	};
+}
+/** A non-empty string no longer than `limit` characters. */
+function isBoundedId(value, limit) {
+	return typeof value === "string" && value.length > 0 && value.length <= limit;
+}
+/**
+* Validate and normalize one group document from the wire or from disk.
+*
+* Unknown extra fields are dropped, so a document written by a later version
+* still loads; a malformed one is rejected whole rather than partially applied.
+*
+* One normalization is worth naming: a Workspace may appear at most once in the
+* document, because a Workspace lives in one group. A repeated member is dropped
+* rather than rejected whole — the same treatment an unknown field gets — so a
+* hand-edited file with a stray duplicate still opens.
+* @param raw - parsed JSON body or file content.
+* @returns the normalized document, or `null` when the shape is invalid.
+*/
+function normalizeGroupDocument(raw) {
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+	const groups = raw.groups;
+	if (!Array.isArray(groups) || groups.length > 200) return null;
+	const seenIds = /* @__PURE__ */ new Set();
+	const placed = /* @__PURE__ */ new Set();
+	const out = [];
+	let total = 0;
+	for (const group of groups) {
+		if (group === null || typeof group !== "object" || Array.isArray(group)) return null;
+		const { id, name, workspaceIds } = group;
+		if (!isBoundedId(id, 128) || typeof name !== "string" || name.length > 200) return null;
+		if (seenIds.has(id)) return null;
+		seenIds.add(id);
+		if (!Array.isArray(workspaceIds) || workspaceIds.length > 500) return null;
+		const members = [];
+		for (const member of workspaceIds) {
+			if (!isBoundedId(member, 128)) return null;
+			if (placed.has(member)) continue;
+			placed.add(member);
+			members.push(member);
+		}
+		total += members.length;
+		if (total > 2e3) return null;
+		out.push({
+			id,
+			name,
+			workspaceIds: members
+		});
+	}
+	return {
+		version: 1,
+		groups: out
+	};
+}
+//#endregion
+//#region src/client/dialogs.tsx
+/**
+* Name one activity family in the stop-and-archive confirmation.
+* @param activity - one family the Host reported.
+* @param messages - copy for the family and its count.
+* @returns the localized line.
+*/
+function activityLine(activity, messages) {
+	const count = activity.items?.length ?? 1;
+	switch (activity.kind) {
+		case "turn": return messages.activityTurn;
+		case "subagent": return messages.activitySubagent(count);
+		case "job": return messages.activityJob(count);
+		case "schedule": return messages.activitySchedule(count);
+		default: return messages.activityOther(count);
+	}
+}
+/** Identity of one dialog, so a new dialog starts from clean field values. */
+function dialogKey(current) {
+	switch (current.kind) {
+		case "renameGroup": return `rename-group:${current.groupId}`;
+		case "renameWorkspace": return `rename-workspace:${current.workspaceId}`;
+		case "renameSession": return `rename-session:${current.sessionId}`;
+		case "archiveGroup": return `archive-group:${current.groupId}`;
+		case "deleteGroupWorkspaces": return `delete-workspaces:${current.groupId}`;
+		case "deleteWorkspace": return `delete-workspace:${current.workspaceId}`;
+		case "archiveSession": return `archive-session:${current.sessionId}`;
+		default: return "create-group";
+	}
+}
+/** One field-bearing or confirming dialog, on the shipped modal. */
+function DialogHost({ dialog, busy, messages, close, submit }) {
+	const [name, setName] = (0, react.useState)(() => currentName(dialog));
+	const [pending, setPending] = (0, react.useState)(false);
+	const [error, setError] = (0, react.useState)(void 0);
+	const needsName = dialogNeedsName(dialog);
+	const disabled = busy || pending;
+	const confirmLabel = dialogConfirmLabel(dialog, messages);
+	const confirm = () => {
+		if (disabled) return;
+		setPending(true);
+		setError(void 0);
+		submit(name).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setPending(false));
+	};
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(_deepseek_ai_dsh_client_ui_primitives.Modal, {
+		open: true,
+		onClose: () => {
+			if (!disabled) close();
+		},
+		title: dialogTitle(dialog, messages),
+		closeLabel: messages.close,
+		description: dialogBody(dialog, messages),
+		footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+			variant: "outline",
+			size: "md",
+			onClick: close,
+			disabled,
+			children: messages.cancel
+		}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+			variant: "primary",
+			size: "md",
+			onClick: confirm,
+			disabled,
+			children: disabled ? messages.working : confirmLabel
+		})] }),
+		children: [
+			dialog.kind === "archiveSession" && dialog.activity.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+				className: "dwo-activity",
+				"aria-label": messages.activityLabel,
+				children: dialog.activity.map((activity, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", { children: activityLine(activity, messages) }, `${activity.kind}-${String(index)}`))
+			}),
+			needsName && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Input, {
+				value: name,
+				placeholder: dialogFieldLabel(dialog, messages),
+				"aria-label": dialogFieldLabel(dialog, messages),
+				maxLength: dialogNameLimit(dialog),
+				"data-modal-autofocus": true,
+				onChange: (event) => setName(event.target.value)
+			}),
+			error !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: "dwo-dialog-error",
+				role: "alert",
+				children: error
+			})
+		]
+	});
+}
+/** Whether one dialog edits a name. */
+function dialogNeedsName(dialog) {
+	return dialog.kind === "createGroup" || dialog.kind === "renameGroup" || dialog.kind === "renameWorkspace" || dialog.kind === "renameSession";
+}
+/**
+* The character cap of one dialog's name field, when the field has one.
+*
+* A group name is bounded by the group document, which the Host validates whole:
+* one name past {@link MAX_GROUP_NAME_LENGTH} and every save of that document is
+* refused as an invalid document — a refusal the retry control reports, but one
+* the operator can do nothing about. Capping the field keeps that state
+* unreachable. A Workspace or
+* Session title belongs to its own controller, which validates it itself, so
+* those dialogs carry no cap of their own.
+* @param dialog - the dialog being rendered.
+* @returns the field's `maxLength`, or `undefined` when it has none.
+*/
+function dialogNameLimit(dialog) {
+	return dialog.kind === "createGroup" || dialog.kind === "renameGroup" ? 200 : void 0;
+}
+/** The name a rename dialog starts from. */
+function currentName(dialog) {
+	switch (dialog.kind) {
+		case "renameGroup":
+		case "renameWorkspace":
+		case "renameSession": return dialog.current;
+		default: return "";
+	}
+}
+/** One dialog's heading. */
+function dialogTitle(dialog, messages) {
+	switch (dialog.kind) {
+		case "createGroup": return messages.newGroup;
+		case "renameGroup": return messages.renameGroup;
+		case "renameWorkspace": return messages.renameWorkspace;
+		case "renameSession": return messages.renameSession;
+		case "archiveGroup": return messages.archiveGroup;
+		case "deleteGroupWorkspaces": return messages.deleteGroupWorkspaces;
+		case "deleteWorkspace": return messages.deleteWorkspace;
+		case "archiveSession": return messages.archiveConfirmTitle;
+	}
+}
+/** One dialog's supporting sentence. */
+function dialogBody(dialog, messages) {
+	switch (dialog.kind) {
+		case "archiveGroup": {
+			const body = messages.archiveGroupBody(dialog.targets.length);
+			return dialog.running > 0 ? `${body} ${messages.archiveGroupRunning(dialog.running)}` : body;
+		}
+		case "deleteGroupWorkspaces": return messages.deleteGroupWorkspacesBody(dialog.workspaceIds.length);
+		case "deleteWorkspace": return messages.deleteWorkspaceBody;
+		case "archiveSession": return messages.archiveConfirmBody(dialog.title);
+		default: return;
+	}
+}
+/** One dialog's primary-button label. */
+function dialogConfirmLabel(dialog, messages) {
+	return dialog.kind === "archiveSession" ? messages.archiveConfirmAction : messages.ok;
+}
+/** One dialog's field label, doubling as its placeholder. */
+function dialogFieldLabel(dialog, messages) {
+	switch (dialog.kind) {
+		case "renameWorkspace": return messages.nameWorkspace;
+		case "renameSession": return messages.nameSession;
+		default: return messages.nameGroup;
+	}
 }
 //#endregion
 //#region src/client/groups.ts
@@ -420,9 +510,9 @@ async function saveGroupDocument(doc) {
 			body: JSON.stringify(doc)
 		});
 		if (response.ok) return { ok: true };
-		let detail = `HTTP ${String(response.status ?? "?")}`;
+		let detail = `HTTP ${String(response.status)}`;
 		try {
-			const text = typeof response.text === "function" ? await response.text() : "";
+			const text = await response.text();
 			if (text !== "") detail += `: ${text.slice(0, 300)}`;
 		} catch {}
 		console.warn("workspace-organize: the Host refused the group document:", detail);
@@ -774,16 +864,19 @@ function groupRollUp(members, list, statuses, archived) {
 * cannot load outside the shell's own module table, so importing it would drag
 * the whole component library into every derivation. Only the boundaries can
 * drift — the bucket vocabulary itself is the primitives' own
-* ({@link TimeBucket} is `RelativeTimeUnit`), and `select.spec.ts` pins them.
+* ({@link TimeBucket} is `RelativeTimeUnit`), and `select.spec.ts` pins every
+* boundary through {@link timeLabel}.
 * @param at - epoch ms of the dated moment.
 * @param now - current epoch ms.
-* @returns the bucket plus its magnitude (0 for "now").
+* @returns the bucket plus its magnitude (0 for "now"). A moment ahead of `now`
+* reads as "now": the first comparison takes any diff below a minute, a negative
+* one included.
 */
 function relativeTime(at, now) {
 	const MIN = 6e4;
 	const HOUR = 36e5;
 	const DAY = 864e5;
-	const diff = Math.max(0, now - at);
+	const diff = now - at;
 	if (diff < MIN) return {
 		unit: "now",
 		n: 0
@@ -954,8 +1047,9 @@ html[data-input-modality=keyboard] .dwo-group-row:focus-within .dwo-count { disp
 * Presentation is the shipped one — the same row metrics, the same design
 * tokens, and the shipped `Icon*`, `StateDot`, `Menu` and `Modal` primitives, so
 * menus keep the shared blur and transparency and dialogs keep the shared mask,
-* focus handling and layering. Everything derived lives in `select.ts`; this
-* file owns interaction state only.
+* focus handling and layering. The row rules and roll-ups themselves live in
+* `select.ts`; the aggregation this tree needs — the per-Workspace row maps, the
+* roll-up booleans and the row-key walk — lives here, beside the state it reads.
 */
 /** Inline indent for one row, consumed by the shared row padding rule. */
 function indent(depth) {
@@ -975,22 +1069,6 @@ function activeSessionRefusal(error) {
 	if (!(error instanceof Error) || error.name !== "WorkspaceArchiveError") return void 0;
 	const rpc = error.rpcError;
 	return rpc?.code === "workspace/session-active" ? rpc.details?.activity ?? [] : void 0;
-}
-/**
-* Name one activity family in the stop-and-archive confirmation.
-* @param activity - one family the Host reported.
-* @param messages - copy for the family and its count.
-* @returns the localized line.
-*/
-function activityLine(activity, messages) {
-	const count = activity.items?.length ?? 1;
-	switch (activity.kind) {
-		case "turn": return messages.activityTurn;
-		case "subagent": return messages.activitySubagent(count);
-		case "job": return messages.activityJob(count);
-		case "schedule": return messages.activitySchedule(count);
-		default: return messages.activityOther(count);
-	}
 }
 /**
 * Disclosure key of the bucket for Sessions no Workspace accounts for.
@@ -1030,6 +1108,8 @@ function GroupedBrowser(props) {
 	const [saveFailed, setSaveFailed] = (0, react.useState)(false);
 	/** Why the last write was refused, when the Host said. */
 	const [saveError, setSaveError] = (0, react.useState)(void 0);
+	/** The search field focuses when the header magnifier opens it. */
+	const searchInput = (0, react.useRef)(null);
 	/**
 	* The client's write chain: each save starts after the previous one settles.
 	*
@@ -1040,8 +1120,6 @@ function GroupedBrowser(props) {
 	* the newest edit rather than whichever request won the race — and because the
 	* answers then arrive in edit order, the last one is the state to show.
 	*/
-	/** The search field focuses when the header magnifier opens it. */
-	const searchInput = (0, react.useRef)(null);
 	const writeTail = (0, react.useRef)(Promise.resolve({ ok: true }));
 	/** Newest document, kept for the retry control after a refused save. */
 	const lastDocument = (0, react.useRef)(void 0);
@@ -1434,7 +1512,6 @@ function GroupedBrowser(props) {
 			"aria-selected": currentSessionId === sessionId,
 			"aria-description": isArchived ? messages.archivedNotOpenable : void 0,
 			style: indent(depth),
-			"data-session-id": sessionId,
 			tabIndex: 0,
 			onClick: open,
 			onKeyDown: (event) => {
@@ -1532,8 +1609,7 @@ function GroupedBrowser(props) {
 				}))),
 				delete: () => setDialog({
 					kind: "deleteWorkspace",
-					workspaceId: workspace.workspaceId,
-					title: label
+					workspaceId: workspace.workspaceId
 				})
 			};
 			for (const target of others) actions[`move:${target.id}`] = () => moveWorkspace(workspace.workspaceId, target.id);
@@ -1681,7 +1757,6 @@ function GroupedBrowser(props) {
 				archive: () => setDialog({
 					kind: "archiveGroup",
 					groupId: group.id,
-					name: group.name,
 					targets: content,
 					running: stopIds.length,
 					stopIds
@@ -1690,7 +1765,6 @@ function GroupedBrowser(props) {
 				deleteWorkspaces: () => setDialog({
 					kind: "deleteGroupWorkspaces",
 					groupId: group.id,
-					name: group.name,
 					workspaceIds: allMembers.map((member) => member.workspaceId)
 				}),
 				ungroup: () => persist(currentGroups.filter((current) => current.id !== group.id))
@@ -1867,6 +1941,54 @@ function GroupedBrowser(props) {
 			setDialog(void 0);
 		}
 	};
+	/** Apply the dialog the operator confirmed. */
+	async function submitDialog(current, name) {
+		switch (current.kind) {
+			case "createGroup":
+			case "renameGroup": {
+				const trimmed = name.trim();
+				if (trimmed !== "") {
+					if (current.kind === "createGroup") persist([...currentGroups, {
+						id: newGroupId(),
+						name: trimmed,
+						workspaceIds: []
+					}]);
+					else persist(currentGroups.map((group) => group.id === current.groupId ? {
+						...group,
+						name: trimmed
+					} : group));
+				}
+				setDialog(void 0);
+				return;
+			}
+			case "renameWorkspace": {
+				const trimmed = name.trim();
+				if (trimmed !== "") await services.renameWorkspace(current.workspaceId, trimmed).catch((error) => console.warn("workspace-organize: rename failed", error));
+				setDialog(void 0);
+				return;
+			}
+			case "renameSession": {
+				const trimmed = name.trim();
+				if (trimmed !== "") await services.renameSession(current.sessionId, trimmed).catch((error) => console.warn("workspace-organize: session rename failed", error));
+				setDialog(void 0);
+				return;
+			}
+			case "archiveGroup":
+				await confirmArchiveGroup(current.targets, current.stopIds);
+				return;
+			case "deleteGroupWorkspaces":
+				await confirmDeleteGroupWorkspaces(current.groupId, current.workspaceIds);
+				return;
+			case "archiveSession":
+				await services.archiveSession(current.sessionId, { stopActivity: true });
+				setDialog(void 0);
+				return;
+			case "deleteWorkspace":
+				await services.deleteWorkspace(current.workspaceId).catch((error) => console.warn("workspace-organize: delete failed", error));
+				setDialog(void 0);
+				return;
+		}
+	}
 	const addWorkspace = () => {
 		services.pickDirectory().then((path) => {
 			if (path === null || path === "") return void 0;
@@ -2207,197 +2329,11 @@ function GroupedBrowser(props) {
 				dialog,
 				busy,
 				messages,
-				close: () => {
-					if (!busy) setDialog(void 0);
-				},
+				close: () => setDialog(void 0),
 				submit: (name) => submitDialog(dialog, name)
 			}, dialogKey(dialog))
 		]
 	});
-	/** Identity of one dialog, so a new dialog starts from clean field values. */
-	function dialogKey(current) {
-		switch (current.kind) {
-			case "renameGroup": return `rename-group:${current.groupId}`;
-			case "renameWorkspace": return `rename-workspace:${current.workspaceId}`;
-			case "renameSession": return `rename-session:${current.sessionId}`;
-			case "archiveGroup": return `archive-group:${current.groupId}`;
-			case "deleteGroupWorkspaces": return `delete-workspaces:${current.groupId}`;
-			case "deleteWorkspace": return `delete-workspace:${current.workspaceId}`;
-			case "archiveSession": return `archive-session:${current.sessionId}`;
-			default: return "create-group";
-		}
-	}
-	/** Apply the dialog the operator confirmed. */
-	async function submitDialog(current, name) {
-		switch (current.kind) {
-			case "createGroup":
-			case "renameGroup": {
-				const trimmed = name.trim();
-				if (trimmed !== "") {
-					if (current.kind === "createGroup") persist([...currentGroups, {
-						id: newGroupId(),
-						name: trimmed,
-						workspaceIds: []
-					}]);
-					else persist(currentGroups.map((group) => group.id === current.groupId ? {
-						...group,
-						name: trimmed
-					} : group));
-				}
-				setDialog(void 0);
-				return;
-			}
-			case "renameWorkspace": {
-				const trimmed = name.trim();
-				if (trimmed !== "") await services.renameWorkspace(current.workspaceId, trimmed).catch((error) => console.warn("workspace-organize: rename failed", error));
-				setDialog(void 0);
-				return;
-			}
-			case "renameSession": {
-				const trimmed = name.trim();
-				if (trimmed !== "") await services.renameSession(current.sessionId, trimmed).catch((error) => console.warn("workspace-organize: session rename failed", error));
-				setDialog(void 0);
-				return;
-			}
-			case "archiveGroup":
-				await confirmArchiveGroup(current.targets, current.stopIds);
-				return;
-			case "deleteGroupWorkspaces":
-				await confirmDeleteGroupWorkspaces(current.groupId, current.workspaceIds);
-				return;
-			case "archiveSession":
-				await services.archiveSession(current.sessionId, { stopActivity: true });
-				setDialog(void 0);
-				return;
-			case "deleteWorkspace":
-				await services.deleteWorkspace(current.workspaceId).catch((error) => console.warn("workspace-organize: delete failed", error));
-				setDialog(void 0);
-				return;
-		}
-	}
-}
-/** One field-bearing or confirming dialog, on the shipped modal. */
-function DialogHost({ dialog, busy, messages, close, submit }) {
-	const [name, setName] = (0, react.useState)(() => currentName(dialog));
-	const [pending, setPending] = (0, react.useState)(false);
-	const [error, setError] = (0, react.useState)(void 0);
-	const needsName = dialogNeedsName(dialog);
-	const disabled = busy || pending;
-	const confirmLabel = dialogConfirmLabel(dialog, messages);
-	const confirm = () => {
-		if (disabled) return;
-		setPending(true);
-		setError(void 0);
-		submit(name).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setPending(false));
-	};
-	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(_deepseek_ai_dsh_client_ui_primitives.Modal, {
-		open: true,
-		onClose: () => {
-			if (!disabled) close();
-		},
-		title: dialogTitle(dialog, messages),
-		closeLabel: messages.close,
-		description: dialogBody(dialog, messages),
-		footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-			variant: "outline",
-			size: "md",
-			onClick: close,
-			disabled,
-			children: messages.cancel
-		}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
-			variant: "primary",
-			size: "md",
-			onClick: confirm,
-			disabled,
-			children: disabled ? messages.working : confirmLabel
-		})] }),
-		children: [
-			dialog.kind === "archiveSession" && dialog.activity.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-				className: "dwo-activity",
-				"aria-label": messages.activityLabel,
-				children: dialog.activity.map((activity, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", { children: activityLine(activity, messages) }, `${activity.kind}-${String(index)}`))
-			}),
-			needsName && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Input, {
-				value: name,
-				placeholder: dialogFieldLabel(dialog, messages),
-				"aria-label": dialogFieldLabel(dialog, messages),
-				maxLength: dialogNameLimit(dialog),
-				"data-modal-autofocus": true,
-				onChange: (event) => setName(event.target.value)
-			}),
-			error !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-				className: "dwo-dialog-error",
-				role: "alert",
-				children: error
-			})
-		]
-	});
-}
-/** Whether one dialog edits a name. */
-function dialogNeedsName(dialog) {
-	return dialog.kind === "createGroup" || dialog.kind === "renameGroup" || dialog.kind === "renameWorkspace" || dialog.kind === "renameSession";
-}
-/**
-* The character cap of one dialog's name field, when the field has one.
-*
-* A group name is bounded by the group document, which the Host validates whole:
-* one name past {@link MAX_GROUP_NAME_LENGTH} and every save of that document is
-* refused as an invalid document, which the Client can only show as a save that
-* never settles. Capping the field keeps that state unreachable. A Workspace or
-* Session title belongs to its own controller, which validates it itself, so
-* those dialogs carry no cap of their own.
-* @param dialog - the dialog being rendered.
-* @returns the field's `maxLength`, or `undefined` when it has none.
-*/
-function dialogNameLimit(dialog) {
-	return dialog.kind === "createGroup" || dialog.kind === "renameGroup" ? 200 : void 0;
-}
-/** The name a rename dialog starts from. */
-function currentName(dialog) {
-	switch (dialog.kind) {
-		case "renameGroup":
-		case "renameWorkspace":
-		case "renameSession": return dialog.current;
-		default: return "";
-	}
-}
-/** One dialog's heading. */
-function dialogTitle(dialog, messages) {
-	switch (dialog.kind) {
-		case "createGroup": return messages.newGroup;
-		case "renameGroup": return messages.renameGroup;
-		case "renameWorkspace": return messages.renameWorkspace;
-		case "renameSession": return messages.renameSession;
-		case "archiveGroup": return messages.archiveGroup;
-		case "deleteGroupWorkspaces": return messages.deleteGroupWorkspaces;
-		case "deleteWorkspace": return messages.deleteWorkspace;
-		case "archiveSession": return messages.archiveConfirmTitle;
-	}
-}
-/** One dialog's supporting sentence. */
-function dialogBody(dialog, messages) {
-	switch (dialog.kind) {
-		case "archiveGroup": {
-			const body = messages.archiveGroupBody(dialog.targets.length);
-			return dialog.running > 0 ? `${body} ${messages.archiveGroupRunning(dialog.running)}` : body;
-		}
-		case "deleteGroupWorkspaces": return messages.deleteGroupWorkspacesBody(dialog.workspaceIds.length);
-		case "deleteWorkspace": return messages.deleteWorkspaceBody;
-		case "archiveSession": return messages.archiveConfirmBody(dialog.title);
-		default: return;
-	}
-}
-/** One dialog's primary-button label. */
-function dialogConfirmLabel(dialog, messages) {
-	return dialog.kind === "archiveSession" ? messages.archiveConfirmAction : messages.ok;
-}
-/** One dialog's field label, doubling as its placeholder. */
-function dialogFieldLabel(dialog, messages) {
-	switch (dialog.kind) {
-		case "renameWorkspace": return messages.nameWorkspace;
-		case "renameSession": return messages.nameSession;
-		default: return messages.nameGroup;
-	}
 }
 //#endregion
 //#region src/client/index.tsx

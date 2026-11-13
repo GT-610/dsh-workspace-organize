@@ -5,12 +5,12 @@
  * Presentation is the shipped one — the same row metrics, the same design
  * tokens, and the shipped `Icon*`, `StateDot`, `Menu` and `Modal` primitives, so
  * menus keep the shared blur and transparency and dialogs keep the shared mask,
- * focus handling and layering. Everything derived lives in `select.ts`; this
- * file owns interaction state only.
+ * focus handling and layering. The row rules and roll-ups themselves live in
+ * `select.ts`; the aggregation this tree needs — the per-Workspace row maps, the
+ * roll-up booleans and the row-key walk — lives here, beside the state it reads.
  */
 import {
   AnimatedRows,
-  Button,
   IconArchiveOutlineRegular,
   IconChevronsUpDownOutlineRegular,
   IconCloseFillRegular,
@@ -26,21 +26,20 @@ import {
   IconTrashOutlineRegular,
   IconTriangleRightFillRegular,
   IconUnarchiveOutlineRegular,
-  Input,
   Menu,
-  Modal,
   StateDot,
   Tooltip,
   type MenuEntry,
   type MenuItem,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { workspaceDisplayTitle } from '@deepseek-ai/dsh-api-workspace-controller/default-workspace'
-import type { SessionActivity, WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type { SessionActivity } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { MAX_GROUP_NAME_LENGTH, type WorkspaceGroup } from '../shared/contract.ts'
+import type { WorkspaceGroup } from '../shared/contract.ts'
 import type { OrganizeBrowserProps } from './contract.ts'
 import { asWorkspaceId } from './contract.ts'
+import { DialogHost, dialogKey, type Dialog } from './dialogs.tsx'
 import {
   loadArchivedFilter,
   loadExpansion,
@@ -53,7 +52,7 @@ import {
   type ExpansionState,
   type SaveOutcome,
 } from './groups.ts'
-import { messagesFrom, type Messages } from './i18n.ts'
+import { messagesFrom } from './i18n.ts'
 import {
   contentSessionIds,
   groupRollUp,
@@ -68,33 +67,6 @@ import {
   type SessionSelection,
 } from './select.ts'
 import { STYLES } from './styles.ts'
-
-/** Which dialog is on screen, and the facts it needs. */
-type Dialog =
-  | { kind: 'createGroup' }
-  | { kind: 'renameGroup'; groupId: string; current: string }
-  | { kind: 'renameWorkspace'; workspaceId: WorkspaceId; current: string }
-  | { kind: 'renameSession'; sessionId: SessionId; current: string }
-  | {
-    kind: 'archiveGroup'
-    groupId: string
-    name: string
-    /** Sessions the confirmation counted, frozen at open time. */
-    targets: readonly SessionId[]
-    /** How many of them were running when the dialog opened. */
-    running: number
-    /** Targets whose running work the operator agreed to stop. */
-    stopIds: readonly SessionId[]
-  }
-  | {
-    kind: 'deleteGroupWorkspaces'
-    groupId: string
-    name: string
-    /** Workspace ids the confirmation counted, frozen at open time. */
-    workspaceIds: readonly string[]
-  }
-  | { kind: 'deleteWorkspace'; workspaceId: WorkspaceId; title: string }
-  | { kind: 'archiveSession'; sessionId: SessionId; title: string; activity: readonly SessionActivity[] }
 
 /** One open row menu: where it points and what each row does. */
 interface OpenMenu {
@@ -142,26 +114,6 @@ function activeSessionRefusal(error: unknown): readonly SessionActivity[] | unde
 }
 
 /**
- * Name one activity family in the stop-and-archive confirmation.
- * @param activity - one family the Host reported.
- * @param messages - copy for the family and its count.
- * @returns the localized line.
- */
-function activityLine(activity: SessionActivity, messages: Messages): string {
-  const count = activity.items?.length ?? 1
-  // The kind union is merged by other packages; this plugin only compiles the
-  // augmentations it imports, so compare as a string and keep the default line.
-  const kind: string = activity.kind
-  switch (kind) {
-    case 'turn': return messages.activityTurn
-    case 'subagent': return messages.activitySubagent(count)
-    case 'job': return messages.activityJob(count)
-    case 'schedule': return messages.activitySchedule(count)
-    default: return messages.activityOther(count)
-  }
-}
-
-/**
  * Disclosure key of the bucket for Sessions no Workspace accounts for.
  *
  * Deliberately outside the `g:` and `ws:` id spaces: the bucket has no id of its
@@ -206,8 +158,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const [query, setQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   // Explicit disclosure choices per node key. An absent key means "follow the
-  // default": workspaces rest collapsed and groups rest open, which is what
-  // keeps the tree from opening as a wall of session rows.
+  // default": workspaces rest collapsed — except the one holding the current
+  // Session — and groups rest open, which is what keeps the tree from opening
+  // as a wall of session rows.
   const [expansion, setExpansion] = useState<ExpansionState>(loadExpansion)
   const [archivedFilter, setArchivedFilter] = useState<ArchivedFilter>(loadArchivedFilter)
   const [menu, setMenu] = useState<OpenMenu | undefined>(undefined)
@@ -217,6 +170,8 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const [saveFailed, setSaveFailed] = useState(false)
   /** Why the last write was refused, when the Host said. */
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
+  /** The search field focuses when the header magnifier opens it. */
+  const searchInput = useRef<HTMLInputElement | null>(null)
   /**
    * The client's write chain: each save starts after the previous one settles.
    *
@@ -227,8 +182,6 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
    * the newest edit rather than whichever request won the race — and because the
    * answers then arrive in edit order, the last one is the state to show.
    */
-  /** The search field focuses when the header magnifier opens it. */
-  const searchInput = useRef<HTMLInputElement | null>(null)
   const writeTail = useRef<Promise<SaveOutcome>>(Promise.resolve({ ok: true }))
   /** Newest document, kept for the retry control after a refused save. */
   const lastDocument = useRef<WorkspaceGroup[] | undefined>(undefined)
@@ -694,7 +647,6 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         aria-selected={currentSessionId === sessionId}
         aria-description={isArchived ? messages.archivedNotOpenable : undefined}
         style={indent(depth)}
-        data-session-id={sessionId}
         tabIndex={0}
         onClick={open}
         onKeyDown={(event) => {
@@ -775,7 +727,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           ...group,
           workspaceIds: group.workspaceIds.filter(id => id !== workspace.workspaceId),
         }))),
-        delete: () => setDialog({ kind: 'deleteWorkspace', workspaceId: workspace.workspaceId, title: label }),
+        delete: () => setDialog({ kind: 'deleteWorkspace', workspaceId: workspace.workspaceId }),
       }
       // One entry per candidate group, addressed by the submenu row id.
       for (const target of others) {
@@ -898,7 +850,6 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         archive: () => setDialog({
           kind: 'archiveGroup',
           groupId: group.id,
-          name: group.name,
           targets: content,
           running: stopIds.length,
           stopIds,
@@ -907,7 +858,6 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         deleteWorkspaces: () => setDialog({
           kind: 'deleteGroupWorkspaces',
           groupId: group.id,
-          name: group.name,
           workspaceIds: allMembers.map(member => member.workspaceId),
         }),
         ungroup: () => persist(currentGroups.filter(current => current.id !== group.id)),
@@ -1081,6 +1031,57 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     }
   }
 
+  /** Apply the dialog the operator confirmed. */
+  async function submitDialog(current: Dialog, name: string): Promise<void> {
+    switch (current.kind) {
+      case 'createGroup':
+      case 'renameGroup': {
+        const trimmed = name.trim()
+        if (trimmed !== '') {
+          if (current.kind === 'createGroup') persist([...currentGroups, { id: newGroupId(), name: trimmed, workspaceIds: [] }])
+          else persist(currentGroups.map(group => (group.id === current.groupId ? { ...group, name: trimmed } : group)))
+        }
+        setDialog(undefined)
+        return
+      }
+      case 'renameWorkspace': {
+        const trimmed = name.trim()
+        // An unchanged title is confirmed on purpose: the shipped dialog lets it
+        // pin an automatic title, so skipping it would keep that out of reach.
+        if (trimmed !== '') {
+          await services.renameWorkspace(current.workspaceId, trimmed)
+            .catch(error => console.warn('workspace-organize: rename failed', error))
+        }
+        setDialog(undefined)
+        return
+      }
+      case 'renameSession': {
+        const trimmed = name.trim()
+        if (trimmed !== '') {
+          await services.renameSession(current.sessionId, trimmed)
+            .catch(error => console.warn('workspace-organize: session rename failed', error))
+        }
+        setDialog(undefined)
+        return
+      }
+      case 'archiveGroup':
+        await confirmArchiveGroup(current.targets, current.stopIds)
+        return
+      case 'deleteGroupWorkspaces':
+        await confirmDeleteGroupWorkspaces(current.groupId, current.workspaceIds)
+        return
+      case 'archiveSession':
+        await services.archiveSession(current.sessionId, { stopActivity: true })
+        setDialog(undefined)
+        return
+      case 'deleteWorkspace': {
+        await services.deleteWorkspace(current.workspaceId)
+          .catch(error => console.warn('workspace-organize: delete failed', error))
+        setDialog(undefined)
+        return
+      }
+    }
+  }
   const addWorkspace = (): void => {
     void services.pickDirectory().then((path) => {
       if (path === null || path === '') return undefined
@@ -1396,218 +1397,12 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           dialog={dialog}
           busy={busy}
           messages={messages}
-          close={() => { if (!busy) setDialog(undefined) }}
+          close={() => setDialog(undefined)}
           submit={name => submitDialog(dialog, name)}
         />
       )}
     </div>
   )
 
-  /** Identity of one dialog, so a new dialog starts from clean field values. */
-  function dialogKey(current: Dialog): string {
-    switch (current.kind) {
-      case 'renameGroup': return `rename-group:${current.groupId}`
-      case 'renameWorkspace': return `rename-workspace:${current.workspaceId}`
-      case 'renameSession': return `rename-session:${current.sessionId}`
-      case 'archiveGroup': return `archive-group:${current.groupId}`
-      case 'deleteGroupWorkspaces': return `delete-workspaces:${current.groupId}`
-      case 'deleteWorkspace': return `delete-workspace:${current.workspaceId}`
-      case 'archiveSession': return `archive-session:${current.sessionId}`
-      default: return 'create-group'
-    }
-  }
-
-  /** Apply the dialog the operator confirmed. */
-  async function submitDialog(current: Dialog, name: string): Promise<void> {
-    switch (current.kind) {
-      case 'createGroup':
-      case 'renameGroup': {
-        const trimmed = name.trim()
-        if (trimmed !== '') {
-          if (current.kind === 'createGroup') persist([...currentGroups, { id: newGroupId(), name: trimmed, workspaceIds: [] }])
-          else persist(currentGroups.map(group => (group.id === current.groupId ? { ...group, name: trimmed } : group)))
-        }
-        setDialog(undefined)
-        return
-      }
-      case 'renameWorkspace': {
-        const trimmed = name.trim()
-        // An unchanged title is confirmed on purpose: the shipped dialog lets it
-        // pin an automatic title, so skipping it would keep that out of reach.
-        if (trimmed !== '') {
-          await services.renameWorkspace(current.workspaceId, trimmed)
-            .catch(error => console.warn('workspace-organize: rename failed', error))
-        }
-        setDialog(undefined)
-        return
-      }
-      case 'renameSession': {
-        const trimmed = name.trim()
-        if (trimmed !== '') {
-          await services.renameSession(current.sessionId, trimmed)
-            .catch(error => console.warn('workspace-organize: session rename failed', error))
-        }
-        setDialog(undefined)
-        return
-      }
-      case 'archiveGroup':
-        await confirmArchiveGroup(current.targets, current.stopIds)
-        return
-      case 'deleteGroupWorkspaces':
-        await confirmDeleteGroupWorkspaces(current.groupId, current.workspaceIds)
-        return
-      case 'archiveSession':
-        await services.archiveSession(current.sessionId, { stopActivity: true })
-        setDialog(undefined)
-        return
-      case 'deleteWorkspace': {
-        await services.deleteWorkspace(current.workspaceId)
-          .catch(error => console.warn('workspace-organize: delete failed', error))
-        setDialog(undefined)
-        return
-      }
-    }
-  }
 }
 
-/** One field-bearing or confirming dialog, on the shipped modal. */
-function DialogHost({ dialog, busy, messages, close, submit }: {
-  dialog: Dialog
-  busy: boolean
-  messages: Messages
-  close: () => void
-  submit: (name: string) => Promise<void>
-}) {
-  const [name, setName] = useState(() => currentName(dialog))
-  const [pending, setPending] = useState(false)
-  const [error, setError] = useState<string | undefined>(undefined)
-  const needsName = dialogNeedsName(dialog)
-  const disabled = busy || pending
-  const confirmLabel = dialogConfirmLabel(dialog, messages)
-  const confirm = (): void => {
-    if (disabled) return
-    setPending(true)
-    setError(undefined)
-    // The dialog stays open with the failure on screen: a refused stop or a
-    // rejected rename must not look like it worked.
-    void submit(name)
-      .catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
-      .finally(() => setPending(false))
-  }
-  return (
-    <Modal
-      open
-      onClose={() => { if (!disabled) close() }}
-      title={dialogTitle(dialog, messages)}
-      closeLabel={messages.close}
-      description={dialogBody(dialog, messages)}
-      footer={(
-        <>
-          <Button variant="outline" size="md" onClick={close} disabled={disabled}>{messages.cancel}</Button>
-          <Button variant="primary" size="md" onClick={confirm} disabled={disabled}>
-            {disabled ? messages.working : confirmLabel}
-          </Button>
-        </>
-      )}
-    >
-      {dialog.kind === 'archiveSession' && dialog.activity.length > 0 && (
-        <ul className="dwo-activity" aria-label={messages.activityLabel}>
-          {dialog.activity.map((activity, index) => (
-            <li key={`${activity.kind}-${String(index)}`}>{activityLine(activity, messages)}</li>
-          ))}
-        </ul>
-      )}
-      {needsName && (
-        <Input
-          value={name}
-          placeholder={dialogFieldLabel(dialog, messages)}
-          aria-label={dialogFieldLabel(dialog, messages)}
-          maxLength={dialogNameLimit(dialog)}
-          data-modal-autofocus
-          onChange={event => setName(event.target.value)}
-        />
-      )}
-      {error !== undefined && <div className="dwo-dialog-error" role="alert">{error}</div>}
-    </Modal>
-  )
-}
-
-/** Whether one dialog edits a name. */
-function dialogNeedsName(dialog: Dialog): boolean {
-  return dialog.kind === 'createGroup'
-    || dialog.kind === 'renameGroup'
-    || dialog.kind === 'renameWorkspace'
-    || dialog.kind === 'renameSession'
-}
-
-/**
- * The character cap of one dialog's name field, when the field has one.
- *
- * A group name is bounded by the group document, which the Host validates whole:
- * one name past {@link MAX_GROUP_NAME_LENGTH} and every save of that document is
- * refused as an invalid document, which the Client can only show as a save that
- * never settles. Capping the field keeps that state unreachable. A Workspace or
- * Session title belongs to its own controller, which validates it itself, so
- * those dialogs carry no cap of their own.
- * @param dialog - the dialog being rendered.
- * @returns the field's `maxLength`, or `undefined` when it has none.
- */
-function dialogNameLimit(dialog: Dialog): number | undefined {
-  return dialog.kind === 'createGroup' || dialog.kind === 'renameGroup'
-    ? MAX_GROUP_NAME_LENGTH
-    : undefined
-}
-
-/** The name a rename dialog starts from. */
-function currentName(dialog: Dialog): string {
-  switch (dialog.kind) {
-    case 'renameGroup':
-    case 'renameWorkspace':
-    case 'renameSession':
-      return dialog.current
-    default:
-      return ''
-  }
-}
-
-/** One dialog's heading. */
-function dialogTitle(dialog: Dialog, messages: Messages): string {
-  switch (dialog.kind) {
-    case 'createGroup': return messages.newGroup
-    case 'renameGroup': return messages.renameGroup
-    case 'renameWorkspace': return messages.renameWorkspace
-    case 'renameSession': return messages.renameSession
-    case 'archiveGroup': return messages.archiveGroup
-    case 'deleteGroupWorkspaces': return messages.deleteGroupWorkspaces
-    case 'deleteWorkspace': return messages.deleteWorkspace
-    case 'archiveSession': return messages.archiveConfirmTitle
-  }
-}
-
-/** One dialog's supporting sentence. */
-function dialogBody(dialog: Dialog, messages: Messages): string | undefined {
-  switch (dialog.kind) {
-    case 'archiveGroup': {
-      const body = messages.archiveGroupBody(dialog.targets.length)
-      return dialog.running > 0 ? `${body} ${messages.archiveGroupRunning(dialog.running)}` : body
-    }
-    case 'deleteGroupWorkspaces': return messages.deleteGroupWorkspacesBody(dialog.workspaceIds.length)
-    case 'deleteWorkspace': return messages.deleteWorkspaceBody
-    case 'archiveSession': return messages.archiveConfirmBody(dialog.title)
-    default: return undefined
-  }
-}
-
-/** One dialog's primary-button label. */
-function dialogConfirmLabel(dialog: Dialog, messages: Messages): string {
-  return dialog.kind === 'archiveSession' ? messages.archiveConfirmAction : messages.ok
-}
-
-/** One dialog's field label, doubling as its placeholder. */
-function dialogFieldLabel(dialog: Dialog, messages: Messages): string {
-  switch (dialog.kind) {
-    case 'renameWorkspace': return messages.nameWorkspace
-    case 'renameSession': return messages.nameSession
-    default: return messages.nameGroup
-  }
-}

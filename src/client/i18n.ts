@@ -11,6 +11,11 @@
  * function-shaped {@link Messages} face the derivations take, so plural and
  * parameterized copy stays typed and testable without dragging the locale
  * runtime into `select.ts`.
+ *
+ * Both of those are derived from {@link EN_DICT} rather than restated: the key
+ * list comes from the dictionary, and which keys interpolate comes from their
+ * templates. A new string is therefore added in two places — this dictionary and
+ * {@link ZH_DICT} — instead of four.
  */
 import type { RelativeTimeUnit } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
@@ -30,9 +35,11 @@ export const LOCALE_NS = 'workspaceOrganize'
 /**
  * Every string this plugin renders, as the locale service stores it.
  *
- * Both dictionaries must carry exactly these keys: the typed registration
- * rejects a missing or extra key at compile time, and the service rejects a
- * missing language at runtime.
+ * This dictionary is the vocabulary's source of truth: {@link Messages} and
+ * {@link messagesFrom} are derived from its keys and its templates, and
+ * {@link ZH_DICT} is checked against those keys at compile time. The reverse is
+ * not checked — this dictionary is what the check is against — so a language
+ * added later must match it.
  */
 export const EN_DICT = {
   // Header
@@ -202,88 +209,29 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
+/**
+ * Dictionary keys whose template interpolates, read off the templates themselves
+ * so a key added to {@link EN_DICT} cannot be forgotten here.
+ */
+type InterpolatedKey = {
+  [K in keyof typeof EN_DICT]: typeof EN_DICT[K] extends `${string}{${string}}${string}` ? K : never
+}[keyof typeof EN_DICT]
+
+/** The interpolated keys that take a `{title}` rather than a `{count}`. */
+type TitleKey = {
+  [K in InterpolatedKey]: typeof EN_DICT[K] extends `${string}{title}${string}` ? K : never
+}[InterpolatedKey]
+
+/** The interpolated keys that take a numeric `{count}`. */
+type CountKey = Exclude<InterpolatedKey, TitleKey>
+
 /** Every string this plugin renders, with the interpolation already applied. */
-export interface Messages {
-  // Header
-  organizeTitle: string
-  addWorkspace: string
-  viewOptions: string
-  expandAll: string
-  collapseAll: string
-  savePending: string
-  saveFailed: string
-  retrySave: string
-  search: string
-  closeSearch: string
-  // List
-  newGroup: string
-  ungroupedWorkspaces: string
-  ungroupedSessions: string
-  loading: string
-  noWorkspaces: string
-  noSessions: string
-  noMatches: string
-  emptyGroup: string
-  // Archived-row visibility
-  hideArchived: string
-  showArchived: string
-  onlyArchived: string
-  archivedOnlyEmpty: string
-  viewOtherSessions: string
-  archivedNotOpenable: string
-  // Rows
-  newSession: string
-  blankSession: string
-  untitled: string
-  defaultWorkspace: string
-  workspaceMenu: string
-  groupMenu: string
-  renameWorkspace: string
-  deleteWorkspace: string
-  renameSession: string
-  archiveSession: string
-  unarchive: string
-  renameGroup: string
-  archiveGroup: string
-  deleteGroupWorkspaces: string
-  removeFromGroup: string
-  moveToGroup: string
-  ungroup: string
-  unitWorkspaces: string
-  unitSessions: string
-  unitRunning: string
-  unitPending: string
-  statusApproval: string
-  statusPlanReview: string
-  statusQuestion: string
-  // Dialogs
-  cancel: string
-  ok: string
-  working: string
-  close: string
-  nameGroup: string
-  nameWorkspace: string
-  nameSession: string
-  archiveGroupBody: (count: number) => string
-  archiveGroupRunning: (count: number) => string
-  deleteGroupWorkspacesBody: (count: number) => string
-  deleteWorkspaceBody: string
-  archiveConfirmTitle: string
-  archiveConfirmBody: (title: string) => string
-  archiveConfirmAction: string
-  activityLabel: string
-  activityTurn: string
-  activitySubagent: (count: number) => string
-  activityJob: (count: number) => string
-  activitySchedule: (count: number) => string
-  activityOther: (count: number) => string
-  // Time buckets
-  timeNow: string
-  timeMinutes: (count: number) => string
-  timeHours: (count: number) => string
-  timeDays: (count: number) => string
-  timeMonths: (count: number) => string
-  timeYears: (count: number) => string
+export type Messages = {
+  readonly [K in Exclude<keyof typeof EN_DICT, InterpolatedKey>]: string
+} & {
+  readonly [K in CountKey]: (count: number) => string
+} & {
+  readonly [K in TitleKey]: (title: string) => string
 }
 
 /**
@@ -291,85 +239,19 @@ export interface Messages {
  *
  * Called on each render rather than memoized: the bound function keeps a stable
  * identity across an active-locale switch, so a `useMemo` on it would keep the
- * previous language.
+ * previous language. The split between a plain string and a function follows the
+ * rule {@link Messages} states: a template that interpolates becomes a function,
+ * because substituting here would freeze one argument into every later call.
  * @param t - the namespace-bound translate seat the slot injects.
  * @returns the string face the derivations and components consume.
  */
 export function messagesFrom(t: TranslateNS<typeof LOCALE_NS>): Messages {
-  return {
-    organizeTitle: t('organizeTitle'),
-    addWorkspace: t('addWorkspace'),
-    viewOptions: t('viewOptions'),
-    expandAll: t('expandAll'),
-    collapseAll: t('collapseAll'),
-    savePending: t('savePending'),
-    saveFailed: t('saveFailed'),
-    retrySave: t('retrySave'),
-    search: t('search'),
-    closeSearch: t('closeSearch'),
-    newGroup: t('newGroup'),
-    ungroupedWorkspaces: t('ungroupedWorkspaces'),
-    ungroupedSessions: t('ungroupedSessions'),
-    loading: t('loading'),
-    noWorkspaces: t('noWorkspaces'),
-    noSessions: t('noSessions'),
-    noMatches: t('noMatches'),
-    emptyGroup: t('emptyGroup'),
-    hideArchived: t('hideArchived'),
-    showArchived: t('showArchived'),
-    onlyArchived: t('onlyArchived'),
-    archivedOnlyEmpty: t('archivedOnlyEmpty'),
-    viewOtherSessions: t('viewOtherSessions'),
-    archivedNotOpenable: t('archivedNotOpenable'),
-    newSession: t('newSession'),
-    blankSession: t('blankSession'),
-    untitled: t('untitled'),
-    defaultWorkspace: t('defaultWorkspace'),
-    workspaceMenu: t('workspaceMenu'),
-    groupMenu: t('groupMenu'),
-    renameWorkspace: t('renameWorkspace'),
-    deleteWorkspace: t('deleteWorkspace'),
-    renameSession: t('renameSession'),
-    archiveSession: t('archiveSession'),
-    unarchive: t('unarchive'),
-    renameGroup: t('renameGroup'),
-    archiveGroup: t('archiveGroup'),
-    deleteGroupWorkspaces: t('deleteGroupWorkspaces'),
-    removeFromGroup: t('removeFromGroup'),
-    moveToGroup: t('moveToGroup'),
-    ungroup: t('ungroup'),
-    unitWorkspaces: t('unitWorkspaces'),
-    unitSessions: t('unitSessions'),
-    unitRunning: t('unitRunning'),
-    unitPending: t('unitPending'),
-    statusApproval: t('statusApproval'),
-    statusPlanReview: t('statusPlanReview'),
-    statusQuestion: t('statusQuestion'),
-    cancel: t('cancel'),
-    ok: t('ok'),
-    working: t('working'),
-    close: t('close'),
-    nameGroup: t('nameGroup'),
-    nameWorkspace: t('nameWorkspace'),
-    nameSession: t('nameSession'),
-    archiveGroupBody: count => t('archiveGroupBody', { count }),
-    archiveGroupRunning: count => t('archiveGroupRunning', { count }),
-    deleteGroupWorkspacesBody: count => t('deleteGroupWorkspacesBody', { count }),
-    deleteWorkspaceBody: t('deleteWorkspaceBody'),
-    archiveConfirmTitle: t('archiveConfirmTitle'),
-    archiveConfirmBody: title => t('archiveConfirmBody', { title }),
-    archiveConfirmAction: t('archiveConfirmAction'),
-    activityLabel: t('activityLabel'),
-    activityTurn: t('activityTurn'),
-    activitySubagent: count => t('activitySubagent', { count }),
-    activityJob: count => t('activityJob', { count }),
-    activitySchedule: count => t('activitySchedule', { count }),
-    activityOther: count => t('activityOther', { count }),
-    timeNow: t('timeNow'),
-    timeMinutes: count => t('timeMinutes', { count }),
-    timeHours: count => t('timeHours', { count }),
-    timeDays: count => t('timeDays', { count }),
-    timeMonths: count => t('timeMonths', { count }),
-    timeYears: count => t('timeYears', { count }),
+  const out: Record<string, string | ((argument: number | string) => string)> = {}
+  for (const key of Object.keys(EN_DICT) as (keyof typeof EN_DICT)[]) {
+    const template: string = EN_DICT[key]
+    out[key] = template.includes('{')
+      ? (argument: number | string) => t(key, { count: argument, title: argument })
+      : t(key)
   }
+  return out as unknown as Messages
 }

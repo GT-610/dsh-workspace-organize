@@ -15,7 +15,7 @@ import {
 import type { ArchivedFilter } from './select.ts'
 
 /** Mirror key for the group document. */
-export const GROUPS_STORAGE_KEY = 'workspaceOrganize.groups'
+const GROUPS_STORAGE_KEY = 'workspaceOrganize.groups'
 
 /** Mirror key for the explicit disclosure choices. */
 export const EXPANSION_STORAGE_KEY = 'workspaceOrganize.expansion'
@@ -65,8 +65,9 @@ export async function loadGroupDocument(): Promise<GroupDocument> {
 /**
  * The Host's answer to one write.
  *
- * A refusal carries the status and response text so the retry control can say
- * why the document was not stored instead of only that it was not.
+ * A refusal carries the status and response text when the Host answered, and the
+ * network error when it did not, so the retry control can say why the document
+ * was not stored instead of only that it was not.
  */
 export type SaveOutcome =
   | { ok: true }
@@ -90,9 +91,9 @@ export async function saveGroupDocument(doc: GroupDocument): Promise<SaveOutcome
       body: JSON.stringify(doc),
     })
     if (response.ok) return { ok: true }
-    let detail = `HTTP ${String(response.status ?? '?')}`
+    let detail = `HTTP ${String(response.status)}`
     try {
-      const text = typeof response.text === 'function' ? await response.text() : ''
+      const text = await response.text()
       if (text !== '') detail += `: ${text.slice(0, 300)}`
     } catch {
       // A body that cannot be read leaves the status as the detail.

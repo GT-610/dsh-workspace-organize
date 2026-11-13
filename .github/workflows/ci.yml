@@ -14,11 +14,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No `version` input on purpose: the action reads `packageManager` from
+      # package.json, which pins pnpm exactly. That pin matters here — the
+      # committed sourcemaps embed pnpm's virtual-store hash, so a different pnpm
+      # layout would make the artifact diff below fail for reasons unrelated to
+      # the source.
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # The floor `engines.node` names, so a regression below it fails here.
+          node-version: 22.19.0
           cache: pnpm
 
       - name: Install
@@ -34,12 +40,18 @@ jobs:
         run: pnpm run test
 
       # The committed artifacts are the ones DSH installs, so the build must not
-      # produce a diff: it fails here instead of silently drifting from the tree.
+      # produce a diff: the step after it fails instead of letting the tree drift.
       - name: Build
         run: pnpm run build
 
       - name: Committed artifacts are current
-        run: git diff --exit-code -- dist
+        # `--exit-code` alone ignores a file the build newly emits, so the paths
+        # are intent-added first. The diff is against HEAD rather than the index:
+        # intent-add records a new file in the index, which leaves a worktree
+        # diff unable to see a tracked artifact the build *removed*.
+        run: |
+          git add -N dist
+          git diff --exit-code HEAD -- dist
 
       # A client bundle may only request the shell's baseline modules; a request
       # outside it fails at runtime, where the sidebar silently falls back to the
@@ -47,3 +59,8 @@ jobs:
       # only step that can catch it.
       - name: Client bundle stays on the baseline
         run: pnpm run check:bundle
+
+      # The typed UI dictionaries are checked by `tsc`; the marketplace card
+      # files are plain JSON that nothing else parses.
+      - name: Locale cards parse and agree
+        run: pnpm run check:locale

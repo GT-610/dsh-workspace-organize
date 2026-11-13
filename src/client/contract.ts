@@ -15,8 +15,9 @@ import { LOCALE_NS } from './i18n.ts'
 
 /**
  * Recover a branded Workspace id from the plain string the group document
- * stores. The document is JSON, so its ids are strings; every id in it was
- * minted by the official registry, which is what makes the narrowing sound.
+ * stores. The document is JSON, so its ids are strings; the validator accepts any
+ * bounded non-empty string, so this is a contract-level trust rather than a proof
+ * — an id that no Workspace answers to simply fails at the service.
  * @param value - the stored id.
  * @returns the same id, branded for the official client services.
  */
