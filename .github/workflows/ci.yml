@@ -46,10 +46,12 @@ jobs:
 
       - name: Committed artifacts are current
         # `--exit-code` alone ignores a file the build newly emits, so the paths
-        # are intent-added first and then diffed like any other change.
+        # are intent-added first. The diff is against HEAD rather than the index:
+        # intent-add records a new file in the index, which leaves a worktree
+        # diff unable to see a tracked artifact the build *removed*.
         run: |
           git add -N dist
-          git diff --exit-code -- dist
+          git diff --exit-code HEAD -- dist
 
       # A client bundle may only request the shell's baseline modules; a request
       # outside it fails at runtime, where the sidebar silently falls back to the
