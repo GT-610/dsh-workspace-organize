@@ -2,6 +2,8 @@
 
 # dsh-workspace-organize
 
+![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)
+
 一个 DSH 插件，把侧栏工作区归入自定义分组，按 分组 → 工作区 → 会话 三级浏览。分组是插件维护的虚拟层，归类本身不改写官方数据。
 
 ## 特性
