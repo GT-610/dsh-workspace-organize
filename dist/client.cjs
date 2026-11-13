@@ -351,8 +351,9 @@ function messagesFrom(t) {
 //#region src/client/contract.ts
 /**
 * Recover a branded Workspace id from the plain string the group document
-* stores. The document is JSON, so its ids are strings; every id in it was
-* minted by the official registry, which is what makes the narrowing sound.
+* stores. The document is JSON, so its ids are strings; the validator accepts any
+* bounded non-empty string, so this is a contract-level trust rather than a proof
+* — an id that no Workspace answers to simply fails at the service.
 * @param value - the stored id.
 * @returns the same id, branded for the official client services.
 */
@@ -420,9 +421,9 @@ async function saveGroupDocument(doc) {
 			body: JSON.stringify(doc)
 		});
 		if (response.ok) return { ok: true };
-		let detail = `HTTP ${String(response.status ?? "?")}`;
+		let detail = `HTTP ${String(response.status)}`;
 		try {
-			const text = typeof response.text === "function" ? await response.text() : "";
+			const text = await response.text();
 			if (text !== "") detail += `: ${text.slice(0, 300)}`;
 		} catch {}
 		console.warn("workspace-organize: the Host refused the group document:", detail);
@@ -774,16 +775,18 @@ function groupRollUp(members, list, statuses, archived) {
 * cannot load outside the shell's own module table, so importing it would drag
 * the whole component library into every derivation. Only the boundaries can
 * drift — the bucket vocabulary itself is the primitives' own
-* ({@link TimeBucket} is `RelativeTimeUnit`), and `select.spec.ts` pins them.
+* ({@link TimeBucket} is `RelativeTimeUnit`), and `select.spec.ts` samples them.
 * @param at - epoch ms of the dated moment.
 * @param now - current epoch ms.
-* @returns the bucket plus its magnitude (0 for "now").
+* @returns the bucket plus its magnitude (0 for "now"). A moment ahead of `now`
+* reads as "now": the first comparison takes any diff below a minute, a negative
+* one included.
 */
 function relativeTime(at, now) {
 	const MIN = 6e4;
 	const HOUR = 36e5;
 	const DAY = 864e5;
-	const diff = Math.max(0, now - at);
+	const diff = now - at;
 	if (diff < MIN) return {
 		unit: "now",
 		n: 0
@@ -954,8 +957,9 @@ html[data-input-modality=keyboard] .dwo-group-row:focus-within .dwo-count { disp
 * Presentation is the shipped one — the same row metrics, the same design
 * tokens, and the shipped `Icon*`, `StateDot`, `Menu` and `Modal` primitives, so
 * menus keep the shared blur and transparency and dialogs keep the shared mask,
-* focus handling and layering. Everything derived lives in `select.ts`; this
-* file owns interaction state only.
+* focus handling and layering. The row rules and roll-ups themselves live in
+* `select.ts`; the aggregation this tree needs — the per-Workspace row maps, the
+* roll-up booleans and the row-key walk — lives here, beside the state it reads.
 */
 /** Inline indent for one row, consumed by the shared row padding rule. */
 function indent(depth) {
@@ -999,6 +1003,19 @@ function activityLine(activity, messages) {
 * own, and a key that borrowed one could outlive the Workspace it named.
 */
 const UNOWNED_KEY = "u:unowned";
+/** Identity of one dialog, so a new dialog starts from clean field values. */
+function dialogKey(current) {
+	switch (current.kind) {
+		case "renameGroup": return `rename-group:${current.groupId}`;
+		case "renameWorkspace": return `rename-workspace:${current.workspaceId}`;
+		case "renameSession": return `rename-session:${current.sessionId}`;
+		case "archiveGroup": return `archive-group:${current.groupId}`;
+		case "deleteGroupWorkspaces": return `delete-workspaces:${current.groupId}`;
+		case "deleteWorkspace": return `delete-workspace:${current.workspaceId}`;
+		case "archiveSession": return `archive-session:${current.sessionId}`;
+		default: return "create-group";
+	}
+}
 /**
 * Render the grouped Workspace browser.
 * @param props - runtime shares plus the injected official operations.
@@ -1030,6 +1047,8 @@ function GroupedBrowser(props) {
 	const [saveFailed, setSaveFailed] = (0, react.useState)(false);
 	/** Why the last write was refused, when the Host said. */
 	const [saveError, setSaveError] = (0, react.useState)(void 0);
+	/** The search field focuses when the header magnifier opens it. */
+	const searchInput = (0, react.useRef)(null);
 	/**
 	* The client's write chain: each save starts after the previous one settles.
 	*
@@ -1040,8 +1059,6 @@ function GroupedBrowser(props) {
 	* the newest edit rather than whichever request won the race — and because the
 	* answers then arrive in edit order, the last one is the state to show.
 	*/
-	/** The search field focuses when the header magnifier opens it. */
-	const searchInput = (0, react.useRef)(null);
 	const writeTail = (0, react.useRef)(Promise.resolve({ ok: true }));
 	/** Newest document, kept for the retry control after a refused save. */
 	const lastDocument = (0, react.useRef)(void 0);
@@ -1434,7 +1451,6 @@ function GroupedBrowser(props) {
 			"aria-selected": currentSessionId === sessionId,
 			"aria-description": isArchived ? messages.archivedNotOpenable : void 0,
 			style: indent(depth),
-			"data-session-id": sessionId,
 			tabIndex: 0,
 			onClick: open,
 			onKeyDown: (event) => {
@@ -1532,8 +1548,7 @@ function GroupedBrowser(props) {
 				}))),
 				delete: () => setDialog({
 					kind: "deleteWorkspace",
-					workspaceId: workspace.workspaceId,
-					title: label
+					workspaceId: workspace.workspaceId
 				})
 			};
 			for (const target of others) actions[`move:${target.id}`] = () => moveWorkspace(workspace.workspaceId, target.id);
@@ -1681,7 +1696,6 @@ function GroupedBrowser(props) {
 				archive: () => setDialog({
 					kind: "archiveGroup",
 					groupId: group.id,
-					name: group.name,
 					targets: content,
 					running: stopIds.length,
 					stopIds
@@ -1690,7 +1704,6 @@ function GroupedBrowser(props) {
 				deleteWorkspaces: () => setDialog({
 					kind: "deleteGroupWorkspaces",
 					groupId: group.id,
-					name: group.name,
 					workspaceIds: allMembers.map((member) => member.workspaceId)
 				}),
 				ungroup: () => persist(currentGroups.filter((current) => current.id !== group.id))
@@ -1867,6 +1880,54 @@ function GroupedBrowser(props) {
 			setDialog(void 0);
 		}
 	};
+	/** Apply the dialog the operator confirmed. */
+	async function submitDialog(current, name) {
+		switch (current.kind) {
+			case "createGroup":
+			case "renameGroup": {
+				const trimmed = name.trim();
+				if (trimmed !== "") {
+					if (current.kind === "createGroup") persist([...currentGroups, {
+						id: newGroupId(),
+						name: trimmed,
+						workspaceIds: []
+					}]);
+					else persist(currentGroups.map((group) => group.id === current.groupId ? {
+						...group,
+						name: trimmed
+					} : group));
+				}
+				setDialog(void 0);
+				return;
+			}
+			case "renameWorkspace": {
+				const trimmed = name.trim();
+				if (trimmed !== "") await services.renameWorkspace(current.workspaceId, trimmed).catch((error) => console.warn("workspace-organize: rename failed", error));
+				setDialog(void 0);
+				return;
+			}
+			case "renameSession": {
+				const trimmed = name.trim();
+				if (trimmed !== "") await services.renameSession(current.sessionId, trimmed).catch((error) => console.warn("workspace-organize: session rename failed", error));
+				setDialog(void 0);
+				return;
+			}
+			case "archiveGroup":
+				await confirmArchiveGroup(current.targets, current.stopIds);
+				return;
+			case "deleteGroupWorkspaces":
+				await confirmDeleteGroupWorkspaces(current.groupId, current.workspaceIds);
+				return;
+			case "archiveSession":
+				await services.archiveSession(current.sessionId, { stopActivity: true });
+				setDialog(void 0);
+				return;
+			case "deleteWorkspace":
+				await services.deleteWorkspace(current.workspaceId).catch((error) => console.warn("workspace-organize: delete failed", error));
+				setDialog(void 0);
+				return;
+		}
+	}
 	const addWorkspace = () => {
 		services.pickDirectory().then((path) => {
 			if (path === null || path === "") return void 0;
@@ -2207,74 +2268,11 @@ function GroupedBrowser(props) {
 				dialog,
 				busy,
 				messages,
-				close: () => {
-					if (!busy) setDialog(void 0);
-				},
+				close: () => setDialog(void 0),
 				submit: (name) => submitDialog(dialog, name)
 			}, dialogKey(dialog))
 		]
 	});
-	/** Identity of one dialog, so a new dialog starts from clean field values. */
-	function dialogKey(current) {
-		switch (current.kind) {
-			case "renameGroup": return `rename-group:${current.groupId}`;
-			case "renameWorkspace": return `rename-workspace:${current.workspaceId}`;
-			case "renameSession": return `rename-session:${current.sessionId}`;
-			case "archiveGroup": return `archive-group:${current.groupId}`;
-			case "deleteGroupWorkspaces": return `delete-workspaces:${current.groupId}`;
-			case "deleteWorkspace": return `delete-workspace:${current.workspaceId}`;
-			case "archiveSession": return `archive-session:${current.sessionId}`;
-			default: return "create-group";
-		}
-	}
-	/** Apply the dialog the operator confirmed. */
-	async function submitDialog(current, name) {
-		switch (current.kind) {
-			case "createGroup":
-			case "renameGroup": {
-				const trimmed = name.trim();
-				if (trimmed !== "") {
-					if (current.kind === "createGroup") persist([...currentGroups, {
-						id: newGroupId(),
-						name: trimmed,
-						workspaceIds: []
-					}]);
-					else persist(currentGroups.map((group) => group.id === current.groupId ? {
-						...group,
-						name: trimmed
-					} : group));
-				}
-				setDialog(void 0);
-				return;
-			}
-			case "renameWorkspace": {
-				const trimmed = name.trim();
-				if (trimmed !== "") await services.renameWorkspace(current.workspaceId, trimmed).catch((error) => console.warn("workspace-organize: rename failed", error));
-				setDialog(void 0);
-				return;
-			}
-			case "renameSession": {
-				const trimmed = name.trim();
-				if (trimmed !== "") await services.renameSession(current.sessionId, trimmed).catch((error) => console.warn("workspace-organize: session rename failed", error));
-				setDialog(void 0);
-				return;
-			}
-			case "archiveGroup":
-				await confirmArchiveGroup(current.targets, current.stopIds);
-				return;
-			case "deleteGroupWorkspaces":
-				await confirmDeleteGroupWorkspaces(current.groupId, current.workspaceIds);
-				return;
-			case "archiveSession":
-				await services.archiveSession(current.sessionId, { stopActivity: true });
-				setDialog(void 0);
-				return;
-			case "deleteWorkspace":
-				await services.deleteWorkspace(current.workspaceId).catch((error) => console.warn("workspace-organize: delete failed", error));
-				setDialog(void 0);
-				return;
-		}
-	}
 }
 /** One field-bearing or confirming dialog, on the shipped modal. */
 function DialogHost({ dialog, busy, messages, close, submit }) {
@@ -2342,8 +2340,9 @@ function dialogNeedsName(dialog) {
 *
 * A group name is bounded by the group document, which the Host validates whole:
 * one name past {@link MAX_GROUP_NAME_LENGTH} and every save of that document is
-* refused as an invalid document, which the Client can only show as a save that
-* never settles. Capping the field keeps that state unreachable. A Workspace or
+* refused as an invalid document — a refusal the retry control reports, but one
+* the operator can do nothing about. Capping the field keeps that state
+* unreachable. A Workspace or
 * Session title belongs to its own controller, which validates it itself, so
 * those dialogs carry no cap of their own.
 * @param dialog - the dialog being rendered.

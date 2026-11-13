@@ -5,8 +5,9 @@
  * Presentation is the shipped one — the same row metrics, the same design
  * tokens, and the shipped `Icon*`, `StateDot`, `Menu` and `Modal` primitives, so
  * menus keep the shared blur and transparency and dialogs keep the shared mask,
- * focus handling and layering. Everything derived lives in `select.ts`; this
- * file owns interaction state only.
+ * focus handling and layering. The row rules and roll-ups themselves live in
+ * `select.ts`; the aggregation this tree needs — the per-Workspace row maps, the
+ * roll-up booleans and the row-key walk — lives here, beside the state it reads.
  */
 import {
   AnimatedRows,
@@ -78,7 +79,6 @@ type Dialog =
   | {
     kind: 'archiveGroup'
     groupId: string
-    name: string
     /** Sessions the confirmation counted, frozen at open time. */
     targets: readonly SessionId[]
     /** How many of them were running when the dialog opened. */
@@ -89,11 +89,10 @@ type Dialog =
   | {
     kind: 'deleteGroupWorkspaces'
     groupId: string
-    name: string
     /** Workspace ids the confirmation counted, frozen at open time. */
     workspaceIds: readonly string[]
   }
-  | { kind: 'deleteWorkspace'; workspaceId: WorkspaceId; title: string }
+  | { kind: 'deleteWorkspace'; workspaceId: WorkspaceId }
   | { kind: 'archiveSession'; sessionId: SessionId; title: string; activity: readonly SessionActivity[] }
 
 /** One open row menu: where it points and what each row does. */
@@ -169,6 +168,20 @@ function activityLine(activity: SessionActivity, messages: Messages): string {
  */
 const UNOWNED_KEY = 'u:unowned'
 
+  /** Identity of one dialog, so a new dialog starts from clean field values. */
+  function dialogKey(current: Dialog): string {
+    switch (current.kind) {
+      case 'renameGroup': return `rename-group:${current.groupId}`
+      case 'renameWorkspace': return `rename-workspace:${current.workspaceId}`
+      case 'renameSession': return `rename-session:${current.sessionId}`
+      case 'archiveGroup': return `archive-group:${current.groupId}`
+      case 'deleteGroupWorkspaces': return `delete-workspaces:${current.groupId}`
+      case 'deleteWorkspace': return `delete-workspace:${current.workspaceId}`
+      case 'archiveSession': return `archive-session:${current.sessionId}`
+      default: return 'create-group'
+    }
+  }
+
 /**
  * Render the grouped Workspace browser.
  * @param props - runtime shares plus the injected official operations.
@@ -206,8 +219,9 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const [query, setQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   // Explicit disclosure choices per node key. An absent key means "follow the
-  // default": workspaces rest collapsed and groups rest open, which is what
-  // keeps the tree from opening as a wall of session rows.
+  // default": workspaces rest collapsed — except the one holding the current
+  // Session — and groups rest open, which is what keeps the tree from opening
+  // as a wall of session rows.
   const [expansion, setExpansion] = useState<ExpansionState>(loadExpansion)
   const [archivedFilter, setArchivedFilter] = useState<ArchivedFilter>(loadArchivedFilter)
   const [menu, setMenu] = useState<OpenMenu | undefined>(undefined)
@@ -217,6 +231,8 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
   const [saveFailed, setSaveFailed] = useState(false)
   /** Why the last write was refused, when the Host said. */
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
+  /** The search field focuses when the header magnifier opens it. */
+  const searchInput = useRef<HTMLInputElement | null>(null)
   /**
    * The client's write chain: each save starts after the previous one settles.
    *
@@ -227,8 +243,6 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
    * the newest edit rather than whichever request won the race — and because the
    * answers then arrive in edit order, the last one is the state to show.
    */
-  /** The search field focuses when the header magnifier opens it. */
-  const searchInput = useRef<HTMLInputElement | null>(null)
   const writeTail = useRef<Promise<SaveOutcome>>(Promise.resolve({ ok: true }))
   /** Newest document, kept for the retry control after a refused save. */
   const lastDocument = useRef<WorkspaceGroup[] | undefined>(undefined)
@@ -694,7 +708,6 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         aria-selected={currentSessionId === sessionId}
         aria-description={isArchived ? messages.archivedNotOpenable : undefined}
         style={indent(depth)}
-        data-session-id={sessionId}
         tabIndex={0}
         onClick={open}
         onKeyDown={(event) => {
@@ -775,7 +788,7 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           ...group,
           workspaceIds: group.workspaceIds.filter(id => id !== workspace.workspaceId),
         }))),
-        delete: () => setDialog({ kind: 'deleteWorkspace', workspaceId: workspace.workspaceId, title: label }),
+        delete: () => setDialog({ kind: 'deleteWorkspace', workspaceId: workspace.workspaceId }),
       }
       // One entry per candidate group, addressed by the submenu row id.
       for (const target of others) {
@@ -898,7 +911,6 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         archive: () => setDialog({
           kind: 'archiveGroup',
           groupId: group.id,
-          name: group.name,
           targets: content,
           running: stopIds.length,
           stopIds,
@@ -907,7 +919,6 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         deleteWorkspaces: () => setDialog({
           kind: 'deleteGroupWorkspaces',
           groupId: group.id,
-          name: group.name,
           workspaceIds: allMembers.map(member => member.workspaceId),
         }),
         ungroup: () => persist(currentGroups.filter(current => current.id !== group.id)),
@@ -1081,6 +1092,57 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
     }
   }
 
+  /** Apply the dialog the operator confirmed. */
+  async function submitDialog(current: Dialog, name: string): Promise<void> {
+    switch (current.kind) {
+      case 'createGroup':
+      case 'renameGroup': {
+        const trimmed = name.trim()
+        if (trimmed !== '') {
+          if (current.kind === 'createGroup') persist([...currentGroups, { id: newGroupId(), name: trimmed, workspaceIds: [] }])
+          else persist(currentGroups.map(group => (group.id === current.groupId ? { ...group, name: trimmed } : group)))
+        }
+        setDialog(undefined)
+        return
+      }
+      case 'renameWorkspace': {
+        const trimmed = name.trim()
+        // An unchanged title is confirmed on purpose: the shipped dialog lets it
+        // pin an automatic title, so skipping it would keep that out of reach.
+        if (trimmed !== '') {
+          await services.renameWorkspace(current.workspaceId, trimmed)
+            .catch(error => console.warn('workspace-organize: rename failed', error))
+        }
+        setDialog(undefined)
+        return
+      }
+      case 'renameSession': {
+        const trimmed = name.trim()
+        if (trimmed !== '') {
+          await services.renameSession(current.sessionId, trimmed)
+            .catch(error => console.warn('workspace-organize: session rename failed', error))
+        }
+        setDialog(undefined)
+        return
+      }
+      case 'archiveGroup':
+        await confirmArchiveGroup(current.targets, current.stopIds)
+        return
+      case 'deleteGroupWorkspaces':
+        await confirmDeleteGroupWorkspaces(current.groupId, current.workspaceIds)
+        return
+      case 'archiveSession':
+        await services.archiveSession(current.sessionId, { stopActivity: true })
+        setDialog(undefined)
+        return
+      case 'deleteWorkspace': {
+        await services.deleteWorkspace(current.workspaceId)
+          .catch(error => console.warn('workspace-organize: delete failed', error))
+        setDialog(undefined)
+        return
+      }
+    }
+  }
   const addWorkspace = (): void => {
     void services.pickDirectory().then((path) => {
       if (path === null || path === '') return undefined
@@ -1396,78 +1458,13 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
           dialog={dialog}
           busy={busy}
           messages={messages}
-          close={() => { if (!busy) setDialog(undefined) }}
+          close={() => setDialog(undefined)}
           submit={name => submitDialog(dialog, name)}
         />
       )}
     </div>
   )
 
-  /** Identity of one dialog, so a new dialog starts from clean field values. */
-  function dialogKey(current: Dialog): string {
-    switch (current.kind) {
-      case 'renameGroup': return `rename-group:${current.groupId}`
-      case 'renameWorkspace': return `rename-workspace:${current.workspaceId}`
-      case 'renameSession': return `rename-session:${current.sessionId}`
-      case 'archiveGroup': return `archive-group:${current.groupId}`
-      case 'deleteGroupWorkspaces': return `delete-workspaces:${current.groupId}`
-      case 'deleteWorkspace': return `delete-workspace:${current.workspaceId}`
-      case 'archiveSession': return `archive-session:${current.sessionId}`
-      default: return 'create-group'
-    }
-  }
-
-  /** Apply the dialog the operator confirmed. */
-  async function submitDialog(current: Dialog, name: string): Promise<void> {
-    switch (current.kind) {
-      case 'createGroup':
-      case 'renameGroup': {
-        const trimmed = name.trim()
-        if (trimmed !== '') {
-          if (current.kind === 'createGroup') persist([...currentGroups, { id: newGroupId(), name: trimmed, workspaceIds: [] }])
-          else persist(currentGroups.map(group => (group.id === current.groupId ? { ...group, name: trimmed } : group)))
-        }
-        setDialog(undefined)
-        return
-      }
-      case 'renameWorkspace': {
-        const trimmed = name.trim()
-        // An unchanged title is confirmed on purpose: the shipped dialog lets it
-        // pin an automatic title, so skipping it would keep that out of reach.
-        if (trimmed !== '') {
-          await services.renameWorkspace(current.workspaceId, trimmed)
-            .catch(error => console.warn('workspace-organize: rename failed', error))
-        }
-        setDialog(undefined)
-        return
-      }
-      case 'renameSession': {
-        const trimmed = name.trim()
-        if (trimmed !== '') {
-          await services.renameSession(current.sessionId, trimmed)
-            .catch(error => console.warn('workspace-organize: session rename failed', error))
-        }
-        setDialog(undefined)
-        return
-      }
-      case 'archiveGroup':
-        await confirmArchiveGroup(current.targets, current.stopIds)
-        return
-      case 'deleteGroupWorkspaces':
-        await confirmDeleteGroupWorkspaces(current.groupId, current.workspaceIds)
-        return
-      case 'archiveSession':
-        await services.archiveSession(current.sessionId, { stopActivity: true })
-        setDialog(undefined)
-        return
-      case 'deleteWorkspace': {
-        await services.deleteWorkspace(current.workspaceId)
-          .catch(error => console.warn('workspace-organize: delete failed', error))
-        setDialog(undefined)
-        return
-      }
-    }
-  }
 }
 
 /** One field-bearing or confirming dialog, on the shipped modal. */
@@ -1545,8 +1542,9 @@ function dialogNeedsName(dialog: Dialog): boolean {
  *
  * A group name is bounded by the group document, which the Host validates whole:
  * one name past {@link MAX_GROUP_NAME_LENGTH} and every save of that document is
- * refused as an invalid document, which the Client can only show as a save that
- * never settles. Capping the field keeps that state unreachable. A Workspace or
+ * refused as an invalid document — a refusal the retry control reports, but one
+ * the operator can do nothing about. Capping the field keeps that state
+ * unreachable. A Workspace or
  * Session title belongs to its own controller, which validates it itself, so
  * those dialogs carry no cap of their own.
  * @param dialog - the dialog being rendered.

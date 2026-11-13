@@ -34,7 +34,7 @@ jobs:
         run: pnpm run test
 
       # The committed artifacts are the ones DSH installs, so the build must not
-      # produce a diff: it fails here instead of silently drifting from the tree.
+      # produce a diff: the step after it fails instead of letting the tree drift.
       - name: Build
         run: pnpm run build
 

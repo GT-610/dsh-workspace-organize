@@ -42,8 +42,9 @@ export const MAX_ID_LENGTH = 128
  * Cap on a group name, in characters.
  *
  * The Client's group dialogs carry it as their input's `maxLength`, so an
- * operator cannot type a name the Host would reject as an invalid document —
- * a rejection the Client could only see as a save that never settles.
+ * operator cannot type a name the Host would reject as an invalid document — a
+ * refusal the retry control would report, but one the operator can do nothing
+ * about.
  */
 export const MAX_GROUP_NAME_LENGTH = 200
 

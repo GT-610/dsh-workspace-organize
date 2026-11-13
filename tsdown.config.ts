@@ -48,7 +48,10 @@ export default defineConfig([
     target: 'node22',
     // `index.js` / `index.d.ts`, not the fixed `.mjs` / `.d.mts` pair.
     fixedExtension: false,
-    dts: true,
+    // `dts` appends a `sourceMappingURL` comment either way, so the map has to
+    // be emitted for it to resolve; it holds relative source paths only, which
+    // keeps the artifact reproducible.
+    dts: { sourcemap: true },
     clean: true,
     sourcemap: true,
   },

@@ -10,7 +10,7 @@
  * directory the workspace domain itself uses), written atomically through a
  * temporary file and a rename on a serialized write chain. Write requests are
  * fenced to same-origin browser callers (`Sec-Fetch-Site`/`Origin` checks);
- * reads are open because the server itself is loopback-trusted.
+ * reads are unauthenticated, so the Host must stay bound to a loopback address.
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -100,7 +100,8 @@ export async function readStoredDocument(file: string): Promise<GroupDocument> {
  * shell uses exactly that shape: its authenticated reverse proxy strips both
  * headers before forwarding `/api/*` to this server. Refusing them made every
  * save from the desktop app a 403 while reads (which have no fence) kept working.
- * The loopback server remains the boundary for local code either way.
+ * Either way the boundary is the Host's bind address, not this function: a Host
+ * serving a LAN address accepts header-less writes from that network too.
  * @param req - incoming request.
  * @returns whether the write may proceed.
  */
