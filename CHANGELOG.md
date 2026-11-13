@@ -6,7 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+
+- The published Host entry exports only `apply` and `inject`. The write fence,
+  the capped body reader and the document store moved to `src/host/`, where they
+  are ordinary modules rather than names on the package's type surface;
+  `dist/index.d.ts` is an order of magnitude smaller.
+- The locale vocabulary is stated once, in `EN_DICT`. `Messages` and
+  `messagesFrom` are derived from its keys and its templates, so a new string is
+  two edits instead of four, and a key that interpolates classifies itself.
+- Both READMEs corrected: subagent sessions get no row of their own, the bucket
+  is "Ungrouped sessions", host changes need a DSH restart rather than a reload,
+  the read route is unauthenticated rather than loopback-bound, the localStorage
+  mirror is written on every save, and `pnpm check` runs five steps.
+- Comments corrected where they had drifted from the code: the browser header
+  claiming no derivation lived in it, the disclosure default, the claim that the
+  time tests pinned boundaries they only sampled, and the loopback assumption
+  behind the read route.
+- `dts` now emits the declaration map its `sourceMappingURL` comment names.
+
+### Fixed
+
+- The group route is covered end to end and the client entry is covered at all;
+  neither had a single test, and three further gaps were proven by mutation
+  before being filled. Eight cases that only restated a neighbour are gone, along
+  with a time-bucketing clamp no input could observe.
 
 ## [0.2.0] - 2026-11-12
 
@@ -28,7 +52,8 @@ _Nothing yet._
   read the same three sources.
 - Rows are keyboard reachable (Tab focus, Enter/Space) and every icon-only
   control has an accessible name; touch devices keep the row verbs visible.
-- A refused Host save shows a retry control instead of an indicator that never
+- A refused Host save shows a retry control that names why — the HTTP status and
+  the response text, or the network failure — instead of an indicator that never
   settles.
 - Archived rows are reachable again. The view menu carries the shipped three-way
   choice — hide archived sessions, show all sessions including archived ones, or
@@ -46,7 +71,6 @@ _Nothing yet._
   Blank placeholders still never match.
 - Group roll-ups skip subagent rows; the parent already counts its running
   children, so a parent and child no longer report two running sessions.
-
 - Group-document writes from the desktop shell are stored again. The shell
   forwards `/api/*` through its authenticated reverse proxy, which removes
   `Origin` and `Sec-Fetch-Site`; the write fence treated that shape as a
@@ -54,8 +78,6 @@ _Nothing yet._
   stayed in the browser mirror. A request carrying neither header is now
   accepted as a non-browser call — a browser's cross-site write always carries
   one — and the READMEs state the rule.
-- A refused Host save now says why. The retry control shows the HTTP status and
-  response text, or the network failure, instead of only "not accepted".
 
 
 - The workspace row's New Session button uses the shipped
@@ -105,14 +127,11 @@ _Nothing yet._
   while the body is being read is neither: it keeps the ordinary 500 path instead
   of being reported as an oversized body.
 - A group name cannot be typed past the document's own cap. The field carries
-  `maxLength`, so a name the Host would reject as an invalid document — which
-  the Client could only show as a save that never settles — is out of reach.
+  `maxLength`, so a name the Host would reject as an invalid document — a
+  refusal the retry control would report but the operator could not fix — is out
+  of reach.
 - "Move out of group" is offered only for a Workspace that is in a group; an
   ungrouped row used to carry an entry that could not change anything.
-- Archiving a session no longer makes it unreachable. The shadowing browser has
-  no shipped browser behind it, so a hidden archived row had no way back; the
-  archived branch of the session row (restore verb, archived styling,
-  `aria-description`) was therefore dead code that only now runs.
 - A group-level archive now acts on exactly the sessions its confirmation
   counted. The count and the operation share one derivation of "a session in
   this group", so a typed search can no longer make the dialog promise three
@@ -153,8 +172,6 @@ _Nothing yet._
 ### Changed
 - Keyboard focus reveals the workspace and group action strips, and hides a
   focused group's count, so their menu and New Session controls are reachable.
-
-
 - The chrome follows the 0.2.2 stylesheet: the sidebar's own row padding, label
   gap and paint-inset variables, 24px action targets, the 28/32px search field,
   section-label and header-action transitions, the wide fade-in, and
@@ -166,7 +183,6 @@ _Nothing yet._
 - The locale dictionaries live in `i18n.ts` and are resolved through the
   framework `t` seat; the component test derives its English copy from the same
   dictionary instead of a second copy.
-
 - Rendering derives the visible rows, the content counts and the move
   destinations once per snapshot rather than once per render site, and member
   lookup is a map instead of a linear scan, so a group tree no longer costs
@@ -180,9 +196,9 @@ _Nothing yet._
   `MAX_GROUP_NAME_LENGTH`) shared by the validator, the Client's field cap and
   the tests, instead of 128 and 200 written out at each site.
 - Dead surface removed. `detectLocale`, `messagesFor` and the `Locale` type were
-  exported for nobody — this bundle renders one locale and publishes `messages`
-  — and `readBody`, the byte cap the write route depends on, is now covered
-  rather than merely exported.
+  exported for nobody — the plugin registers both dictionaries and exports
+  `messagesFrom` — and `readBody`, the byte cap the write route depends on, is
+  now covered rather than merely exported.
 - `apply`'s group-move action is one implementation shared by every candidate
   destination; it used to rebuild the whole document once per submenu row.
 - Tests: the Host's own boundaries (write fence, body cap, home resolution) moved
@@ -197,9 +213,8 @@ _Nothing yet._
   A request outside it fails at runtime, where the sidebar silently falls back
   to the shipped browser; nothing else in CI read the emitted artifact.
 - The READMEs say search matches session titles, not message content.
-- The label over ungrouped Workspaces reads "Ungrouped workspaces", and the bare
-  "Ungrouped" now names the session bucket below them, as it does in the shipped
-  sidebar.
+- The label over ungrouped Workspaces reads "Ungrouped workspaces", and the
+  label over the session bucket below them reads "Ungrouped sessions".
 
 ## [0.1.0] - 2026-10-19
 

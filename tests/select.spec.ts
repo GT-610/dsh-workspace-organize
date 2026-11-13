@@ -317,8 +317,8 @@ describe('unownedSessionIds', () => {
     // Supplied in reverse id order: the bucket sorts newest first and falls back
     // to the id, so the catalog's own order cannot be what decides.
     const same = { updatedAt: 5 }
-    const sessions = list([row('c', same), row('b', same), row('a', same)])
-    expect(unownedSessionIds(sessions, [], undefined, new Set(), '')).toEqual([id('a'), id('b'), id('c')])
+    const catalog = list([row('c', same), row('b', same), row('a', same)])
+    expect(unownedSessionIds(catalog, [], undefined, new Set(), '')).toEqual([id('a'), id('b'), id('c')])
   })
 })
 
