@@ -72,7 +72,7 @@ import { STYLES } from './styles.ts'
 interface OpenMenu {
   /** Row the menu belongs to, so its trailing actions stay visible while open. */
   rowKey: string
-  /** Viewport point the card hangs from. */
+  /** Viewport point the card hangs from, in client coordinates. */
   at: { x: number; y: number }
   /** Data rows for the shipped `Menu`. */
   items: MenuEntry[]
@@ -80,6 +80,8 @@ interface OpenMenu {
   actions: Readonly<Record<string, () => void>>
   /** Row shown as selected, for a menu whose rows are options. */
   selectedId?: string | undefined
+  /** Control the card hands the keyboard back to, as the shipped menus do. */
+  returnFocus?: HTMLElement | undefined
 }
 
 /** One row menu's content, built at open time from live state. */
@@ -573,23 +575,36 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
    * the document capture phase, our handler never runs, and that plugin's menu
    * is the only one on screen. Opening on mousedown would step around that
    * arbitration and stack two menus on every right-click.
+   * @param rowKey - row the menu belongs to.
+   * @param spec - rows and actions, built from live state at open time.
+   * @param at - client coordinates the card hangs from.
+   * @param returnFocus - control that opened the card, for focus return.
    */
-  const openMenu = (rowKey: string, spec: MenuSpec, at: { x: number; y: number }): void => {
-    setMenu({ rowKey, at, items: spec.items, actions: spec.actions, selectedId: spec.selectedId })
+  const openMenu = (
+    rowKey: string,
+    spec: MenuSpec,
+    at: { x: number; y: number },
+    returnFocus?: HTMLElement,
+  ): void => {
+    setMenu({ rowKey, at, items: spec.items, actions: spec.actions, selectedId: spec.selectedId, returnFocus })
   }
 
   /** Right-click wiring for one row. */
   const menuProps = (rowKey: string, spec: () => MenuSpec) => ({
     onContextMenu: (event: React.MouseEvent): void => {
       event.preventDefault()
-      openMenu(rowKey, spec(), { x: event.clientX, y: event.clientY })
+      // The row takes the keyboard while its menu is up, so the card's own
+      // focus return lands back on the row it belongs to.
+      const row = event.currentTarget as HTMLElement
+      row.focus({ preventScroll: true })
+      openMenu(rowKey, spec(), { x: event.clientX, y: event.clientY }, row)
     },
   })
 
   /** Anchor under a button rather than at the pointer. */
   const openMenuUnder = (rowKey: string, spec: MenuSpec, button: HTMLElement): void => {
     const rect = button.getBoundingClientRect()
-    openMenu(rowKey, spec, { x: rect.left, y: rect.bottom + 4 })
+    openMenu(rowKey, spec, { x: rect.left, y: rect.bottom + 4 }, button)
   }
 
   /**
@@ -1378,10 +1393,17 @@ export function GroupedBrowser(props: OrganizeBrowserProps) {
         <Menu
           open
           portal
-          // A zero-size point the card hangs from; `getAnchorRect` below is what
-          // actually places it, so this anchor only has to exist.
-          anchor={<span style={{ position: 'fixed', left: menu.at.x, top: menu.at.y }} />}
-          getAnchorRect={() => new DOMRect(menu.at.x, menu.at.y, 0, 0)}
+          // The shipped context-menu shape: no anchor node, the pointer itself
+          // is the anchor. `anchorPoint` puts a zero-size anchor at those client
+          // coordinates and `contextual` is what makes the card a context popup
+          // (cursor clearance, grouped icons, dismissal of a nested right-click).
+          // A `getAnchorRect` anchor went away in 0.2.2-rc.2; passing one now
+          // leaves the card hanging off this entry's own zero-size wrapper, far
+          // from the pointer.
+          contextual
+          anchor={null}
+          anchorPoint={menu.at}
+          returnFocus={() => menu.returnFocus ?? null}
           items={menu.items}
           selectedId={menu.selectedId}
           onSelect={(id) => {

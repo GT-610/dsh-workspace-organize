@@ -19,7 +19,7 @@ A DSH plugin that groups sidebar workspaces into named groups and browses them a
 
 ## Install
 
-Requires DSH `>= 0.2.2-rc.1`; building and testing need Node.js `>= 22.19.0`.
+Requires DSH `>= 0.2.2-rc.3`; building and testing need Node.js `>= 22.19.0`.
 
 Not yet published to npm. Install from GitHub:
 

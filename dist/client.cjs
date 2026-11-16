@@ -1435,23 +1435,30 @@ function GroupedBrowser(props) {
 	* the document capture phase, our handler never runs, and that plugin's menu
 	* is the only one on screen. Opening on mousedown would step around that
 	* arbitration and stack two menus on every right-click.
+	* @param rowKey - row the menu belongs to.
+	* @param spec - rows and actions, built from live state at open time.
+	* @param at - client coordinates the card hangs from.
+	* @param returnFocus - control that opened the card, for focus return.
 	*/
-	const openMenu = (rowKey, spec, at) => {
+	const openMenu = (rowKey, spec, at, returnFocus) => {
 		setMenu({
 			rowKey,
 			at,
 			items: spec.items,
 			actions: spec.actions,
-			selectedId: spec.selectedId
+			selectedId: spec.selectedId,
+			returnFocus
 		});
 	};
 	/** Right-click wiring for one row. */
 	const menuProps = (rowKey, spec) => ({ onContextMenu: (event) => {
 		event.preventDefault();
+		const row = event.currentTarget;
+		row.focus({ preventScroll: true });
 		openMenu(rowKey, spec(), {
 			x: event.clientX,
 			y: event.clientY
-		});
+		}, row);
 	} });
 	/** Anchor under a button rather than at the pointer. */
 	const openMenuUnder = (rowKey, spec, button) => {
@@ -1459,7 +1466,7 @@ function GroupedBrowser(props) {
 		openMenu(rowKey, spec, {
 			x: rect.left,
 			y: rect.bottom + 4
-		});
+		}, button);
 	};
 	/**
 	* One session row.
@@ -2311,12 +2318,10 @@ function GroupedBrowser(props) {
 			menu !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Menu, {
 				open: true,
 				portal: true,
-				anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { style: {
-					position: "fixed",
-					left: menu.at.x,
-					top: menu.at.y
-				} }),
-				getAnchorRect: () => new DOMRect(menu.at.x, menu.at.y, 0, 0),
+				contextual: true,
+				anchor: null,
+				anchorPoint: menu.at,
+				returnFocus: () => menu.returnFocus ?? null,
 				items: menu.items,
 				selectedId: menu.selectedId,
 				onSelect: (id) => {

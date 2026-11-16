@@ -48,6 +48,30 @@ menus on every right-click. Rows this plugin draws that no other plugin
 understands (group rows, the ungrouped bucket) still reach our handler, so the
 menu appears exactly where nothing else claimed the gesture.
 
+### Positioning: `anchorPoint`, not an anchor rect
+
+The shipped `Menu` used to take `getAnchorRect` and hang the card off an
+arbitrary viewport rectangle. DSH `0.2.2-rc.2` dropped that prop for CSS anchor
+positioning: the card is placed against an **anchor box**, either the trigger
+element (`anchorRef`) or a zero-size box the menu itself puts at the pointer
+(`anchorPoint`). A caller that still passes a rect keeps compiling against
+`0.2.2-rc.1` types, but at runtime the prop is ignored and the card hangs off
+this entry's own zero-size wrapper — somewhere in the browsing region, nowhere
+near the click.
+
+The shape every shell menu uses, and this plugin uses, is therefore:
+
+```tsx
+<Menu open portal contextual anchor={null} anchorPoint={{ x, y }} … />
+```
+
+`contextual` is what makes the card a context popup (cursor clearance, grouped
+icon columns, and swallowing a right-click inside the card). `returnFocus`
+resolves the control the card hands the keyboard back to — each row already
+carries `tabIndex` for that reason. `tests/browser.spec.tsx` asserts the
+coordinates reach the card, so this cannot regress silently; the primitives
+double declares its props one by one instead of accepting anything.
+
 ## Blank sessions
 
 `SessionSummary.blank` marks a provisional "new session" that keeps its id
