@@ -72,6 +72,32 @@ carries `tabIndex` for that reason. `tests/browser.spec.tsx` asserts the
 coordinates reach the card, so this cannot regress silently; the primitives
 double declares its props one by one instead of accepting anything.
 
+### Check the placement in a live shell, not in jsdom
+
+jsdom implements no CSS anchor positioning, so a component test can prove the
+props reach `Menu` and nothing about where the card lands. To see the card, boot
+a throwaway profile that carries this checkout:
+
+```sh
+# A separate DSH_HOME keeps the real profile, storages and sessions untouched.
+cp -R ~/.dsh/profiles/desktop /tmp/probe-home/profiles/probe   # then symlink its node_modules
+DSH_HOME=/tmp/probe-home ELECTRON_RUN_AS_NODE=1 \
+  "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" --expose-internals \
+  "…/dsh-desktop-host/lib/cli.js" --profile probe --port 52999 --no-open
+```
+
+The profile `desktop` itself is reserved for the Electron app, so a copy must be
+renamed. The boot prints an authenticated `?token=…` URL; copy `workspace.json`,
+`workspace-organize-groups.json` and `sessions/` from the real `DSH_HOME` into
+the probe home to get rows to click. Profile dependencies are `link:`s, so a
+probe pointed at this checkout serves whatever `dist/` holds — rebuild before
+booting, and give the whole thing its own port because the shell caches the
+client bundle per rev.
+
+In the page, a dispatched `new MouseEvent('contextmenu', { bubbles: true,
+clientX, clientY })` on a row is enough to open a card; a real Escape (CDP input)
+is what closes it, because the shipped `Menu` ignores synthesized keydowns.
+
 ## Blank sessions
 
 `SessionSummary.blank` marks a provisional "new session" that keeps its id
