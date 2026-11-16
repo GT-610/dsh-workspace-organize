@@ -8,6 +8,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 _Nothing yet._
 
+## [0.2.2] - 2026-11-16
+
+### Fixed
+
+- The row menus no longer vanish on DSH `0.2.2-rc.2` and later. The shipped
+  `Menu` dropped `getAnchorRect` for CSS anchor positioning, so the card was
+  anchored to this entry's own zero-size wrapper instead of the pointer: it
+  opened far from the click, and off the sidebar on a long tree. Every menu now
+  uses the shell's own context-menu shape — `contextual`, `anchor={null}` and
+  `anchorPoint` at the gesture's client coordinates — and hands the keyboard
+  back to the row that opened it through `returnFocus`.
+- A right-click focuses the row it lands on before the card opens, so closing
+  the menu returns the keyboard to that row instead of to the page body.
+
+### Changed
+
+- Development dependencies, `engines.dsh` and both READMEs now name DSH
+  `0.2.2-rc.3`, the release this version is built and tested against.
+- The primitives double in `tests/stubs/primitives.tsx` declares the props it
+  accepts one by one rather than accepting anything, and two cases assert that a
+  row menu reaches the card with the pointer's coordinates. A prop the shell has
+  dropped can no longer pass the suite while failing in the browser.
+
 ## [0.2.1] - 2026-11-13
 
 ### Changed

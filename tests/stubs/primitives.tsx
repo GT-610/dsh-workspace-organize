@@ -122,20 +122,43 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
  * Submenu rows render their children inline so a test can reach a nested entry
  * without simulating hover.
  */
-export function Menu({ open, anchor, items = [], selectedId, onSelect, onClose }: {
+/**
+ * Menu double: renders the anchor plus, while open, one button per row.
+ *
+ * Submenu rows render their children inline so a test can reach a nested entry
+ * without simulating hover. The props are declared one by one, with no catch-all
+ * index signature: the 0.2.2-rc.2 shell replaced its anchor-rect positioning
+ * with pointer coordinates, and a double that accepted anything let this plugin
+ * keep passing a prop the real component had dropped. A card now has to name the
+ * pointer it opened at, or this suite fails.
+ */
+export function Menu({ open, anchor, items = [], selectedId, contextual, anchorPoint, returnFocus, portal, onSelect, onClose }: {
   open: boolean
   anchor: ReactNode
   items?: readonly MenuEntry[]
   selectedId?: string | undefined
+  /** Cursor-positioned popup, as every context menu in the shell is. */
+  contextual?: boolean
+  /** Client coordinates the card hangs from. */
+  anchorPoint?: { readonly x: number; readonly y: number } | undefined
+  /** Resolves the control the card hands the keyboard back to. */
+  returnFocus?: (() => HTMLElement | null) | undefined
+  /** Render the card outside the owner's subtree. */
+  portal?: boolean
   onSelect?: (id: string) => void
   onClose: () => void
-  [key: string]: unknown
 }) {
   if (!open) return <>{anchor}</>
   return (
     <>
       {anchor}
-      <div role="menu">
+      <div
+        role="menu"
+        data-menu-contextual={contextual === true ? '' : undefined}
+        data-menu-portal={portal === true ? '' : undefined}
+        data-menu-anchor-point={anchorPoint === undefined ? undefined : `${anchorPoint.x},${anchorPoint.y}`}
+        data-menu-return-focus={returnFocus === undefined ? undefined : (returnFocus()?.dataset.rowKey ?? 'none')}
+      >
         {items.map(item => ('type' in item
           ? (item.type === 'separator'
               ? <hr key={item.id} data-menu-separator />

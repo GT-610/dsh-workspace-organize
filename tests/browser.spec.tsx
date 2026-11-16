@@ -5,7 +5,7 @@
  * what a row's verbs do, and that the group and workspace menus reach the right
  * operation. The shipped primitives' appearance is the shell's business.
  */
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -427,6 +427,31 @@ describe('GroupedBrowser shipped chrome', () => {
 })
 
 describe('GroupedBrowser menus', () => {
+  it('opens a workspace menu at the pointer, as the shell\'s own context popups do', async () => {
+    mountBrowser()
+    const row = (await screen.findByText('repo')).closest('[data-row-key]') as HTMLElement
+    fireEvent.contextMenu(row, { clientX: 120, clientY: 240 })
+    const menu = await screen.findByRole('menu', { hidden: true })
+    // A card that names no pointer coordinate hangs off this entry's own
+    // zero-size wrapper instead — visibly nowhere near the click, and empty in
+    // every DSH release since 0.2.2-rc.2 dropped the old anchor rect.
+    expect(menu.getAttribute('data-menu-anchor-point')).toBe('120,240')
+    expect(menu.getAttribute('data-menu-contextual')).toBe('')
+    // The row that owns the gesture takes the keyboard back when the card closes.
+    expect(menu.getAttribute('data-menu-return-focus')).toBe('workspace:repo')
+    expect(within(menu).getByText(messages.renameWorkspace)).toBeDefined()
+  })
+
+  it('opens a session menu at the pointer it was clicked', async () => {
+    mountBrowser()
+    const row = (await screen.findByText('named')).closest('[data-row-key]') as HTMLElement
+    fireEvent.contextMenu(row, { clientX: 40, clientY: 55 })
+    const menu = await screen.findByRole('menu', { hidden: true })
+    expect(menu.getAttribute('data-menu-anchor-point')).toBe('40,55')
+    expect(menu.getAttribute('data-menu-return-focus')).toBe('session:named')
+    expect(within(menu).getByText(messages.renameSession)).toBeDefined()
+  })
+
   it('opens the workspace menu and moves the workspace out of its group', async () => {
     const { services } = mountBrowser()
     await screen.findByText('repo')
